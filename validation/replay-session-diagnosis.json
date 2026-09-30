@@ -1,0 +1,170 @@
+[
+  {
+    "file": "101016,(2)Bottleneck.rep",
+    "frames": 12942,
+    "game_type": 2,
+    "game_type_name": "Melee",
+    "subtype": 1,
+    "players": [
+      {
+        "slot": 0,
+        "type": 2,
+        "race": 2,
+        "team": 1
+      },
+      {
+        "slot": 1,
+        "type": 1,
+        "race": 0,
+        "team": 1
+      }
+    ]
+  },
+  {
+    "file": "103007,(4)Fighting Spirit111.rep",
+    "frames": 26574,
+    "game_type": 2,
+    "game_type_name": "Melee",
+    "subtype": 1,
+    "players": [
+      {
+        "slot": 0,
+        "type": 2,
+        "race": 1,
+        "team": 0
+      },
+      {
+        "slot": 2,
+        "type": 2,
+        "race": 0,
+        "team": 0
+      }
+    ]
+  },
+  {
+    "file": "105429,(4)투혼1.4.rep",
+    "frames": 25952,
+    "game_type": 2,
+    "game_type_name": "Melee",
+    "subtype": 1,
+    "players": [
+      {
+        "slot": 0,
+        "type": 2,
+        "race": 2,
+        "team": 0
+      },
+      {
+        "slot": 2,
+        "type": 2,
+        "race": 1,
+        "team": 0
+      }
+    ]
+  },
+  {
+    "file": "110232,(4)투혼1.4.rep",
+    "frames": 14494,
+    "game_type": 2,
+    "game_type_name": "Melee",
+    "subtype": 1,
+    "players": [
+      {
+        "slot": 2,
+        "type": 2,
+        "race": 2,
+        "team": 0
+      },
+      {
+        "slot": 3,
+        "type": 2,
+        "race": 1,
+        "team": 0
+      }
+    ]
+  },
+  {
+    "file": "110531,(2)Blue Storm 1.2_iCCup.rep",
+    "frames": 307,
+    "game_type": 10,
+    "game_type_name": "Use Map Settings",
+    "subtype": 1,
+    "players": [
+      {
+        "slot": 0,
+        "type": 2,
+        "race": 2,
+        "team": 1
+      },
+      {
+        "slot": 1,
+        "type": 2,
+        "race": 0,
+        "team": 1
+      }
+    ]
+  },
+  {
+    "file": "110704,(2)Blue Storm 1.2_iCCup.rep",
+    "frames": 400,
+    "game_type": 10,
+    "game_type_name": "Use Map Settings",
+    "subtype": 1,
+    "players": [
+      {
+        "slot": 0,
+        "type": 2,
+        "race": 2,
+        "team": 1
+      },
+      {
+        "slot": 1,
+        "type": 2,
+        "race": 0,
+        "team": 1
+      }
+    ]
+  },
+  {
+    "file": "110839,(4)투혼1.4.rep",
+    "frames": 833,
+    "game_type": 3,
+    "game_type_name": "Free For All",
+    "subtype": 1,
+    "players": [
+      {
+        "slot": 0,
+        "type": 2,
+        "race": 2,
+        "team": 0
+      },
+      {
+        "slot": 1,
+        "type": 2,
+        "race": 0,
+        "team": 0
+      }
+    ]
+  },
+  {
+    "file": "111030,(4)투혼1.4.rep",
+    "frames": 413,
+    "game_type": 15,
+    "game_type_name": "Top vs Bottom",
+    "subtype": 2,
+    "players": [
+      {
+        "slot": 0,
+        "type": 2,
+        "race": 0,
+        "team": 2
+      },
+      {
+        "slot": 1,
+        "type": 2,
+        "race": 2,
+        "team": 1
+      }
+    ]
+  }
+]

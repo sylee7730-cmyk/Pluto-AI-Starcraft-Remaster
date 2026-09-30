@@ -1,0 +1,24 @@
+/build/
+/work/
+/runtime*/
+/.vs/
+*.user
+*.pdb
+*.ilk
+*.obj
+*.log
+*.rep
+*.zip
+/validation/*-victory-record.txt
+/validation/*.png
+# Upstream game/model inputs and machine-local settings are not redistributed.
+StarCraft.exe
+pluto.dll
+pluto_infer.exe
+pluto_weights.bin
+pluto_config.json
+bridge.ini
+.env
+.env.*
+__pycache__/
+*.pyc

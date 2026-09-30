@@ -1,0 +1,4 @@
+Observed standalone probe result, 2026-09-30:
+Pinned Pluto observation probe: all 8 self slots, two visible opponents of different races, neutral units and hidden-enemy exclusion passed.
+Exit code: 0
+Scope: original observation builder with synthetic memory; no live game or inference engine.
