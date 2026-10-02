@@ -9,6 +9,7 @@
 #include "file_hash.h"
 #include "overlay.h"
 #include "session.h"
+#include "session_reader.h"
 #include "messages.h"
 #include <cstdio>
 #include <share.h>
@@ -35,6 +36,7 @@ bool speed_changed=false;
 bool unsupported_session_reported=false;
 bool allow_multiplayer=false;
 bool challenge_mode=false;
+bool allow_allies=false;
 unsigned submitted_packets=0;
 DWORD game_thread=0;
 int speed_ms=0;
@@ -45,19 +47,6 @@ void print_local(const std::vector<std::string>& lines) {
   // SCR consumes UTF-8 here. Display only on this client, without network chat.
   for(const auto& line:lines)
     reinterpret_cast<void (__cdecl*)(const char*,uint32_t,uint32_t)>(scr::print_text())(line.c_str(),16,0);
-}
-
-Session read_session(uint32_t g) {
-  Session session;
-  session.multiplayer=scr::is_multiplayer()!=0;session.replay=scr::is_replay()!=0;
-  session.custom_singleplayer=scr::read<uint8_t>(g+layout::Game::custom_singleplayer)==1;
-  session.game_type=scr::read<uint16_t>(scr::addr(0x1240e58)+40);
-  session.self=scr::local_player_id();
-  for(unsigned i=0;i<8;++i) {
-    session.players[i]=scr::read<uint8_t>(scr::players()+i*layout::Player::size+layout::Player::player_type);
-    for(unsigned j=0;j<8;++j)session.alliances[i][j]=scr::read<uint8_t>(g+layout::Game::alliances+i*12+j);
-  }
-  return session;
 }
 
 void set_speed(int value) {
@@ -98,7 +87,7 @@ void load_bot() {
     if(file_sha256(bot_path)!=pluto_sha256)throw std::runtime_error("Unsupported Pluto DLL SHA-256; expected CoG 2026 release");
     bot_module=LoadLibraryExW(bot_path,nullptr,LOAD_WITH_ALTERED_SEARCH_PATH);
     if(!bot_module)throw std::runtime_error("Cannot load configured Pluto DLL");
-    legacy=std::make_unique<LegacyView>();legacy->update();legacy->bind(bot_module);
+    legacy=std::make_unique<LegacyView>();legacy->hide_allies=allow_allies;legacy->update();legacy->bind(bot_module);
   }else{legacy->reset();legacy->update();}
   const auto init=reinterpret_cast<void (__cdecl*)(BWAPI::Game*)>(GetProcAddress(bot_module,"gameInit"));
   const auto create=reinterpret_cast<BWAPI::AIModule* (__cdecl*)()>(GetProcAddress(bot_module,"newAIModule"));
@@ -175,7 +164,7 @@ void update_frame() {
   if(match_ended)return;
   if(frame==last_frame)return;
   const auto session=read_session(g);
-  if(last_frame>=0 && session_has_local_ally(session)) {
+  if(last_frame>=0 && !allow_allies && session_has_local_ally(session)) {
     // A new alliance cannot be represented by the original model. Stop this
     // match's AI and discard commands queued before the alliance changed.
     if(legacy)legacy->discard_pending_turns();
@@ -185,7 +174,7 @@ void update_frame() {
     finish_match();return;
   }
   if(last_frame<0) {
-    if(const auto reason=session_rejection(session,allow_multiplayer,challenge_mode)) {
+    if(const auto reason=session_rejection(session,allow_multiplayer,challenge_mode,allow_allies)) {
       if(!unsupported_session_reported) {
         std::fprintf(log_file,"{\"stage\":\"session_skipped\",\"reason\":\"%s\",\"game_type\":%u,\"game_type_name\":\"%s\",\"self\":%u,\"multiplayer\":%s,\"multiplayer_enabled\":%s,\"player_types\":[",
           reason,session.game_type,session_game_type(session.game_type),session.self,
@@ -200,10 +189,12 @@ void update_frame() {
     unsupported_session_reported=false;
     std::fprintf(log_file,"{\"stage\":\"session_accepted\",\"multiplayer\":%s,\"self\":%u,\"game_type\":%u,\"participants\":%u,\"challenge\":%s}\n",
       session.multiplayer?"true":"false",session.self,session.game_type,session_participant_count(session),challenge_mode?"true":"false");
-    if(challenge_mode)print_local({u8"플루토 콘텐츠 실험 모드: 1 대 "+std::to_string(session_participant_count(session)-1)+u8" 경기입니다.",
+    if(allow_allies)print_local({u8"플루토 팀전 개발판: 아군 유닛은 플루토에게 보이지 않습니다.",
+      u8"플루토는 아군과 협력하지 못하고 혼자 판단합니다. 성능은 검증 전입니다."});
+    else if(challenge_mode)print_local({u8"플루토 콘텐츠 실험 모드: 1 대 "+std::to_string(session_participant_count(session)-1)+u8" 경기입니다.",
       u8"1대1 모델을 사용하므로 다인전 전투력과 승률 예측은 검증 전입니다."});
   }
-  if(!snapshot)snapshot=std::make_unique<Snapshot>();
+  if(!snapshot){snapshot=std::make_unique<Snapshot>();snapshot->hide_allies=allow_allies;}
   if(!snapshot->update(last_frame<0))return;
   if(last_frame<0)load_bot();
   run_bot(last_frame<0);
@@ -250,11 +241,14 @@ DWORD WINAPI initialize(void*) {
   speed_ms=GetPrivateProfileIntW(L"pluto",L"speed_ms",0,(directory/L"bridge.ini").c_str());
   allow_multiplayer=GetPrivateProfileIntW(L"pluto",L"multiplayer",0,(directory/L"bridge.ini").c_str())==1;
   challenge_mode=GetPrivateProfileIntW(L"pluto",L"challenge",0,(directory/L"bridge.ini").c_str())==1;
+  // Allied play builds on the 1-vs-many admission rules, so it requires challenge mode.
+  allow_allies=challenge_mode && GetPrivateProfileIntW(L"pluto",L"allies",0,(directory/L"bridge.ini").c_str())==1;
   if(speed_ms>1000)speed_ms=1000;
   log_file=_wfsopen((directory/"bridge.log").c_str(),L"w",_SH_DENYNO);
   if(!log_file)return 1;
-  std::fprintf(log_file,"{\"stage\":\"initializing\",\"pid\":%lu,\"mode\":\"%s\",\"challenge\":%s}\n",GetCurrentProcessId(),
-    challenge_mode?"challenge_experimental":(allow_multiplayer?"multiplayer_experimental":"offline_pluto"),challenge_mode?"true":"false");std::fflush(log_file);
+  std::fprintf(log_file,"{\"stage\":\"initializing\",\"pid\":%lu,\"mode\":\"%s\",\"challenge\":%s,\"allies\":%s}\n",GetCurrentProcessId(),
+    allow_allies?"allies_experimental":(challenge_mode?"challenge_experimental":(allow_multiplayer?"multiplayer_experimental":"offline_pluto")),
+    challenge_mode?"true":"false",allow_allies?"true":"false");std::fflush(log_file);
   try {
     wchar_t executable[32768]{};GetModuleFileNameW(nullptr,executable,32768);
     if(file_sha256(executable)!=scr_sha256)throw std::runtime_error("Unsupported StarCraft executable SHA-256");

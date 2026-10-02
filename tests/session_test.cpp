@@ -58,5 +58,34 @@ int main(){
   require(std::strcmp(session_rejection(alone,true,true),"requires_opponent")==0);
   alone.players[1]=3;alone.alliances[5][1]=1;
   require(!session_has_local_ally(alone)); // Nonparticipant does not block play.
+  // Allied play (opt-in): 3v3 Top vs Bottom with Pluto on the top team. The default
+  // path must still reject it; opting in must keep every other restriction.
+  Session team;team.self=0;team.game_type=15;team.multiplayer=true;
+  for(unsigned i=0;i<6;++i)team.players[i]=2;
+  for(unsigned a:{0u,1u,2u})for(unsigned b:{0u,1u,2u})team.alliances[a][b]=1;
+  for(unsigned a:{3u,4u,5u})for(unsigned b:{3u,4u,5u})team.alliances[a][b]=1;
+  require(session_has_local_ally(team));
+  require(std::strcmp(session_rejection(team,true,true),"local_allies_not_supported")==0);
+  require(std::strcmp(session_rejection(team,true,false,true),"unsupported_game_type")==0); // allies alone do not open Top vs Bottom
+  require(session_rejection(team,true,true,true)==nullptr);
+  require(!supported_session(team,false,true,true));                  // multiplayer still opt-in
+  const AllyMask mask=make_ally_mask(team);
+  require(!mask.hides(0));                                            // Pluto's own slot
+  require(mask.hides(1) && mask.hides(2));                            // allies are withheld
+  require(!mask.hides(3) && !mask.hides(4) && !mask.hides(5));        // enemies stay visible
+  require(!mask.hides(6) && !mask.hides(7) && !mask.hides(8));        // empty slots / out of range
+  for(auto type:{10,11,12,13}) {team.game_type=static_cast<uint16_t>(type);require(!supported_session(team,true,true,true));}
+  team.game_type=15;team.replay=true;require(!supported_session(team,true,true,true));team.replay=false;
+  team.self=9;require(!supported_session(team,true,true,true));require(!make_ally_mask(team).hides(1));team.self=0;
+  // One-directional alliances count, matching the existing local-ally rule.
+  Session oneway;oneway.self=2;oneway.players[2]=2;oneway.players[4]=2;oneway.alliances[4][2]=1;
+  require(make_ally_mask(oneway).hides(4) && !make_ally_mask(oneway).hides(2));
+  // A nonparticipant slot is never hidden even when its alliance flag is set.
+  Session closed;closed.self=1;closed.players[1]=2;closed.players[5]=3;closed.alliances[1][5]=1;
+  require(!make_ally_mask(closed).hides(5));
+  // Allies mask is empty when nobody is allied (default games behave as before).
+  Session plain;plain.self=3;plain.players[3]=2;plain.players[6]=2;
+  for(unsigned i=0;i<8;++i)require(!make_ally_mask(plain).hides(i));
   std::puts("default 1v1 regressions and challenge 1v1..1v7, every slot, enemy teams, allied bot, UMS, shared-control teams, offline and multiplayer checks passed");
+  std::puts("opt-in allied play: 3v3 admission, ally mask, one-way alliances, nonparticipants and unchanged restrictions passed");
 }

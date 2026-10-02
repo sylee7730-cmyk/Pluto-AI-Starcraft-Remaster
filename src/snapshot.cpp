@@ -2,6 +2,7 @@
 #include "scr_profile_13515_x86.h"
 #include "scr_layout.h"
 #include "session.h"
+#include "session_reader.h"
 #include <BWAPI.h>
 #include <algorithm>
 #include <cmath>
@@ -50,6 +51,7 @@ bool Snapshot::update(bool first) {
   auto width=read<uint16_t>(g+G::map_width_tiles),height=read<uint16_t>(g+G::map_height_tiles);
   auto self=scr::local_player_id();
   if (!width || width>256 || !height || height>256 || self>=8) return false;
+  const AllyMask allies=hide_allies?make_ally_mask(read_session(g)):AllyMask{};
   data->eventCount=data->eventStringCount=0;
   data->self=self; data->neutral=11; data->enemy=-1;
   data->client_version=BWAPI::CLIENT_VERSION;
@@ -87,6 +89,7 @@ bool Snapshot::update(bool first) {
       const auto type=read<uint16_t>(p+U::unit_id);
       const auto owner=read<uint8_t>(p+U::player);
       if (!sprite || type>=228 || owner>=12) continue;
+      if (allies.hides(owner)) continue;
       if (read<uint8_t>(p+U::order)==0 && read<uint8_t>(p+U::order_state)==1) continue;
       // Own hidden units (e.g. loaded passengers and larva) remain accessible.
       auto visibility=read<uint8_t>(sprite+layout::Sprite::visibility_mask);

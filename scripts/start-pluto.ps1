@@ -6,12 +6,14 @@ param(
   [switch]$DrawGraph,
   [switch]$Multiplayer,
   [switch]$Challenge,
+  [switch]$Allies,
   [switch]$VerifyOnly
 )
 $ErrorActionPreference = 'Stop'
+if ($Allies -and -not $Challenge) { throw '-Allies requires -Challenge (allied play builds on the 1-v-many admission rules).' }
 $projectRoot = Split-Path $PSScriptRoot -Parent
 $bin = Join-Path $projectRoot 'bin'
-$runtime = Join-Path $projectRoot $(if ($Challenge) { 'runtime-challenge' } elseif ($Multiplayer) { 'runtime-multiplayer' } else { 'runtime' })
+$runtime = Join-Path $projectRoot $(if ($Allies) { 'runtime-allies' } elseif ($Challenge) { 'runtime-challenge' } elseif ($Multiplayer) { 'runtime-multiplayer' } else { 'runtime' })
 function Assert-Hash([string]$Path, [string]$Expected) {
   if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { throw "Missing file: $Path" }
   # Use the built-in .NET implementation, including on Windows PowerShell 5.1
@@ -51,7 +53,7 @@ if ($previousLogs) {
   foreach ($path in $previousLogs) { Move-Item -LiteralPath $path -Destination $archive }
 }
 Copy-Item -LiteralPath (Join-Path $bin 'pluto-scr.dll') -Destination $runtime -Force
-@('[pluto]',"module=$Pluto","speed_ms=$SpeedMs","multiplayer=$([int]$Multiplayer.IsPresent)","challenge=$([int]$Challenge.IsPresent)") | Set-Content -LiteralPath (Join-Path $runtime 'bridge.ini') -Encoding Unicode
+@('[pluto]',"module=$Pluto","speed_ms=$SpeedMs","multiplayer=$([int]$Multiplayer.IsPresent)","challenge=$([int]$Challenge.IsPresent)","allies=$([int]$Allies.IsPresent)") | Set-Content -LiteralPath (Join-Path $runtime 'bridge.ini') -Encoding Unicode
 $previousDraw = $env:BWRL_DRAW
 $previousStraddle = $env:BWRL_STRADDLE
 $previousBudget = $env:BWRL_FRAME_BUDGET_MS
@@ -85,7 +87,10 @@ try {
     Start-Sleep -Milliseconds 200
   }
   if (-not $initialized) { throw "Bridge initialization failed. Read $log" }
-  if ($Challenge) {
+  if ($Allies) {
+    Write-Output "Experimental allied-team bridge ready in StarCraft process $($game.Id). Choose Top vs Bottom (or Free For All) and put Pluto on a team with allies."
+    Write-Output 'Allied units are hidden from Pluto, so it plays alone and cannot coordinate with them. The original 1v1 model is used; match quality is unverified.'
+  } elseif ($Challenge) {
     Write-Output "Experimental 1-v-many bridge ready in StarCraft process $($game.Id). Choose Melee, Free For All or Top vs Bottom."
     Write-Output 'Put Pluto alone on its side, with 1-7 opponents. This uses the original 1v1 model; match quality is unverified.'
   } elseif ($Multiplayer) {

@@ -9,6 +9,7 @@
 class Snapshot {
 public:
   std::unique_ptr<BWAPI::GameData> data = std::make_unique<BWAPI::GameData>();
+  bool hide_allies = false;  // Allied play: omit units owned by Pluto's allies.
   bool update(bool first);
   uint32_t raw_unit(int id) const;
   uint32_t unit_handle(int id) const;

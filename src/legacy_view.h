@@ -7,11 +7,13 @@
 #include <cstdio>
 #include <string>
 #include "commands.h"
+#include "session.h"
 
 // Compatibility view for the pinned Pluto binary's direct 1.16.1 memory reads.
 // The bot writes only to this view; commands are collected for SCR translation.
 class LegacyView {
 public:
+  bool hide_allies=false;  // Allied play: Pluto's unit lists omit its allies' units.
   LegacyView();
   void update();
   void bind(HMODULE pluto);
@@ -37,6 +39,9 @@ private:
   unsigned sent=0;
   struct PendingTurn {int frame;std::vector<Packet> packets;};
   std::vector<PendingTurn> pending_turns;
+  AllyMask hidden_owners;
+  bool is_hidden(uint32_t raw) const;
+  uint32_t skip_hidden(uint32_t raw,unsigned link_offset) const;
   uint32_t address(uint32_t old) const;
   uint32_t unit(uint32_t raw) const;
   uint16_t handle_for_raw(uint32_t raw) const;

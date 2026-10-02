@@ -3,6 +3,8 @@
 #include "scr_profile_13515_x86.h"
 #include "scr_layout.h"
 #include "commands.h"
+#include "session_reader.h"
+#include "unit_list.h"
 #include <algorithm>
 #include <cstring>
 #include <stdexcept>
@@ -43,6 +45,16 @@ uint32_t LegacyView::address(uint32_t old) const {
   if(old<first || old>=last)throw std::runtime_error("Out of range legacy address");
   return reinterpret_cast<uint32_t>(memory.data())+old-first;
 }
+bool LegacyView::is_hidden(uint32_t raw) const {
+  return raw && hidden_owners.hides(scr::read<uint8_t>(raw+layout::Unit::player));
+}
+// Follows a unit list link (prev=0, next=4) past units hidden from Pluto, so the
+// copied list stays contiguous. Without hidden owners this returns raw unchanged.
+uint32_t LegacyView::skip_hidden(uint32_t raw,unsigned link_offset) const {
+  return skip_hidden_links(raw,raw_length,
+    [this](uint32_t unit_raw){return is_hidden(unit_raw);},
+    [link_offset](uint32_t unit_raw){return scr::read<uint32_t>(unit_raw+link_offset);});
+}
 uint32_t LegacyView::unit(uint32_t raw) const {
   auto found=lookup.find(raw);
   return found==lookup.end()?0:address(unit_base+found->second*336);
@@ -66,10 +78,11 @@ void LegacyView::sprite(uint32_t dest,uint32_t raw) {
 void LegacyView::update() {
   raw_start=scr::units();raw_length=scr::read<uint32_t>(scr::addr(0x10436f4));
   if(!raw_start || !raw_length || raw_length>8192)throw std::runtime_error("Invalid SCR unit vector");
+  hidden_owners=hide_allies&&scr::game()?make_ally_mask(read_session(scr::game())):AllyMask{};
   std::unordered_set<uint32_t> present;
   for(unsigned i=0;i<raw_length;++i) {
     auto raw=raw_start+i*336;
-    if(scr::read<uint32_t>(raw+12) && scr::read<uint16_t>(raw+100)<228)present.insert(raw);
+    if(scr::read<uint32_t>(raw+12) && scr::read<uint16_t>(raw+100)<228 && !is_hidden(raw))present.insert(raw);
   }
   if(present.size()>slots.size())throw std::runtime_error("Pluto's legacy unit view exceeded 1700 simultaneous units");
   for(unsigned i=0;i<slots.size();++i)if(slots[i].raw && !present.count(slots[i].raw)) {
@@ -90,14 +103,16 @@ void LegacyView::update() {
   std::memcpy(reinterpret_cast<void*>(address(0x57eee0)),reinterpret_cast<void*>(scr::players()),12*36);
   put<uint32_t>(address(0x512688),scr::local_player_id());
   put<uint32_t>(address(0x59688c),scr::is_multiplayer()?1u:0u);put<uint16_t>(address(0x596904),2);
-  put<uint32_t>(address(0x628430),unit(scr::first_active_unit()));
-  put<uint32_t>(address(0x6283ec),unit(scr::first_hidden_unit()));
-  put<uint32_t>(address(0x6283f4),unit(scr::read<uint32_t>(scr::addr(0x10436b8))));
+  put<uint32_t>(address(0x628430),unit(skip_hidden(scr::first_active_unit(),4)));
+  put<uint32_t>(address(0x6283ec),unit(skip_hidden(scr::first_hidden_unit(),4)));
+  put<uint32_t>(address(0x6283f4),unit(skip_hidden(scr::read<uint32_t>(scr::addr(0x10436b8)),4)));
   put<uint32_t>(address(0x6d1260),scr::map_tile_flags());
   for(unsigned i=0;i<slots.size();++i)if(slots[i].raw) {
     const auto raw=slots[i].raw,dest=address(unit_base+i*336);
     std::memcpy(reinterpret_cast<void*>(dest),reinterpret_cast<void*>(raw),336);
-    for(unsigned offset:{0,4,20,92,104,108,112,124,128,236,240,244,252,284})put<uint32_t>(dest+offset,unit(scr::read<uint32_t>(raw+offset)));
+    put<uint32_t>(dest,unit(skip_hidden(scr::read<uint32_t>(raw),0)));
+    put<uint32_t>(dest+4,unit(skip_hidden(scr::read<uint32_t>(raw+4),4)));
+    for(unsigned offset:{20,92,104,108,112,124,128,236,240,244,252,284})put<uint32_t>(dest+offset,unit(scr::read<uint32_t>(raw+offset)));
     // Unit-specific unions contain both pointers and scalar values. Convert a
     // field only when it points exactly at a currently allocated unit slot.
     for(unsigned offset=192;offset<=216;offset+=4) {
