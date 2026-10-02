@@ -1,10 +1,12 @@
 name: build-pluto-bridge-allies
 
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
@@ -21,14 +23,28 @@ jobs:
       - name: Test
         run: ctest --test-dir build -C Release --output-on-failure
 
-      - name: Collect
+      - name: Package
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Path dist/bin, dist/scripts -Force | Out-Null
           Copy-Item build/Release/pluto-scr.dll, build/Release/scr-loader.exe -Destination dist/bin
           Copy-Item scripts/start-pluto.ps1 -Destination dist/scripts
-          Get-ChildItem -Recurse -File dist | Get-FileHash -Algorithm SHA256 |
-            ForEach-Object { "$($_.Hash.ToLower())  $($_.Path)" } | Set-Content dist/SHA256.txt
+          $hashes = Get-ChildItem -Recurse -File dist | Get-FileHash -Algorithm SHA256 |
+            ForEach-Object { "$($_.Hash.ToLower())  $($_.Path)" }
+          $hashes | Set-Content dist/SHA256.txt
+          Compress-Archive -Path dist/* -DestinationPath pluto-bridge-allies.zip -Force
+
+      - name: Publish release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >
+          gh release create "build-${{ github.run_number }}-${{ github.run_attempt }}"
+          pluto-bridge-allies.zip
+          --title "Pluto bridge (allies) build ${{ github.run_number }}"
+          --notes "Built from commit ${{ github.sha }}"
+          --target "${{ github.sha }}"
+          --latest
 
       - uses: actions/upload-artifact@v4
         with:
