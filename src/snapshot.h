@@ -4,12 +4,15 @@
 #include <memory>
 #include <unordered_map>
 #include <vector>
+#include "session.h"
 
 // Work in progress: translates SCR's simulation state to BWAPI's client layout.
 class Snapshot {
 public:
   std::unique_ptr<BWAPI::GameData> data = std::make_unique<BWAPI::GameData>();
   bool hide_allies = false;  // Allied play: omit units owned by Pluto's allies.
+  bool ally_as_own = false;  // Allied play (alternative): report allies' units as Pluto's own.
+  AllyMask remap_owners;
   bool update(bool first);
   uint32_t raw_unit(int id) const;
   uint32_t unit_handle(int id) const;
