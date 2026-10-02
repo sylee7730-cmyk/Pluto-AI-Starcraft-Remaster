@@ -1,0 +1,36 @@
+name: build-pluto-bridge-allies
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure (MSVC, Win32)
+        run: cmake -S . -B build -A Win32
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: Test
+        run: ctest --test-dir build -C Release --output-on-failure
+
+      - name: Collect
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path dist/bin, dist/scripts -Force | Out-Null
+          Copy-Item build/Release/pluto-scr.dll, build/Release/scr-loader.exe -Destination dist/bin
+          Copy-Item scripts/start-pluto.ps1 -Destination dist/scripts
+          Get-ChildItem -Recurse -File dist | Get-FileHash -Algorithm SHA256 |
+            ForEach-Object { "$($_.Hash.ToLower())  $($_.Path)" } | Set-Content dist/SHA256.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pluto-bridge-allies
+          path: dist
