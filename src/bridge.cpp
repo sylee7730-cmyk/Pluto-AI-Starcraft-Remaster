@@ -37,7 +37,7 @@ bool unsupported_session_reported=false;
 bool allow_multiplayer=false;
 bool challenge_mode=false;
 bool allow_allies=false;
-bool ally_as_own=false;          // Allied play: show allies as Pluto's own forces instead of hiding them.
+bool team_resign=false;          // Allied play: refuse Pluto's resignation while any ally is still alive.
 bool allow_resign=true;          // False ignores Pluto's own leave-game (auto-resign) requests.
 bool resign_notice_shown=false;
 unsigned submitted_packets=0;
@@ -52,6 +52,12 @@ void print_local(const std::vector<std::string>& lines) {
     reinterpret_cast<void (__cdecl*)(const char*,uint32_t,uint32_t)>(scr::print_text())(line.c_str(),16,0);
 }
 
+bool living_ally_present() {
+  const auto g=scr::game();if(!g)return false;
+  std::array<uint8_t,8> victory{};
+  for(unsigned i=0;i<8;++i)victory[i]=scr::read<uint8_t>(g+layout::Game::victory_state+i);
+  return session_has_living_ally(read_session(g),victory);
+}
 void set_speed(int value) {
   if(value<0 || scr::is_multiplayer())return;
   if(!speed_changed) {
@@ -90,7 +96,7 @@ void load_bot() {
     if(file_sha256(bot_path)!=pluto_sha256)throw std::runtime_error("Unsupported Pluto DLL SHA-256; expected CoG 2026 release");
     bot_module=LoadLibraryExW(bot_path,nullptr,LOAD_WITH_ALTERED_SEARCH_PATH);
     if(!bot_module)throw std::runtime_error("Cannot load configured Pluto DLL");
-    legacy=std::make_unique<LegacyView>();legacy->hide_allies=allow_allies && !ally_as_own;legacy->ally_as_own=ally_as_own;legacy->update();legacy->bind(bot_module);
+    legacy=std::make_unique<LegacyView>();legacy->hide_allies=allow_allies;legacy->update();legacy->bind(bot_module);
   }else{legacy->reset();legacy->update();}
   const auto init=reinterpret_cast<void (__cdecl*)(BWAPI::Game*)>(GetProcAddress(bot_module,"gameInit"));
   const auto create=reinterpret_cast<BWAPI::AIModule* (__cdecl*)()>(GetProcAddress(bot_module,"newAIModule"));
@@ -135,12 +141,18 @@ void run_bot(bool first) {
     // The launcher's explicit speed policy takes priority over Pluto's onStart
     // request to uncap. A negative setting leaves the game's own speed intact.
     if(c.type==BWAPIC::CommandType::SetLocalSpeed)set_speed(speed_ms);
-    if(c.type==BWAPIC::CommandType::LeaveGame && !allow_resign) {
+    const bool leaving=c.type==BWAPIC::CommandType::LeaveGame;
+    const bool block_always=leaving && !allow_resign;
+    const bool block_for_ally=leaving && !block_always && team_resign && living_ally_present();
+    if(block_always || block_for_ally) {
       if(!resign_notice_shown) {
         resign_notice_shown=true;
-        std::fprintf(log_file,"{\"resign_ignored\":true,\"decision_frame\":%d}\n",d.frameCount);
-        print_local({u8"플루토의 기권 요청을 무시했습니다 (자동 기권 막기).",
+        std::fprintf(log_file,"{\"resign_ignored\":true,\"reason\":\"%s\",\"decision_frame\":%d}\n",
+          block_always?"always":"ally_alive",d.frameCount);
+        if(block_always)print_local({u8"플루토의 기권 요청을 무시했습니다 (자동 기권 막기).",
           u8"기권 결정 뒤 아무 행동도 하지 않을 수 있습니다."});
+        else print_local({u8"아군이 아직 살아 있어 플루토의 기권 요청을 무시했습니다.",
+          u8"아군이 모두 패배하면 기권을 허용합니다."});
       }
     }
     else if(c.type==BWAPIC::CommandType::LeaveGame) {
@@ -200,14 +212,13 @@ void update_frame() {
     unsupported_session_reported=false;
     std::fprintf(log_file,"{\"stage\":\"session_accepted\",\"multiplayer\":%s,\"self\":%u,\"game_type\":%u,\"participants\":%u,\"challenge\":%s}\n",
       session.multiplayer?"true":"false",session.self,session.game_type,session_participant_count(session),challenge_mode?"true":"false");
-    if(allow_allies && ally_as_own)print_local({u8"플루토 팀전 개발판: 아군 유닛을 플루토의 병력으로 인식합니다.",
-      u8"아군에게는 명령이 전달되지 않습니다. 성능은 검증 전입니다."});
-    else if(allow_allies)print_local({u8"플루토 팀전 개발판: 아군 유닛은 플루토에게 보이지 않습니다.",
+    if(allow_allies)print_local({u8"플루토 팀전 개발판: 아군 유닛은 플루토에게 보이지 않습니다.",
       u8"플루토는 아군과 협력하지 못하고 혼자 판단합니다. 성능은 검증 전입니다."});
+    if(allow_allies && team_resign)print_local({u8"팀 기권 규칙: 아군이 살아 있는 동안은 플루토의 기권을 막습니다."});
     else if(challenge_mode)print_local({u8"플루토 콘텐츠 실험 모드: 1 대 "+std::to_string(session_participant_count(session)-1)+u8" 경기입니다.",
       u8"1대1 모델을 사용하므로 다인전 전투력과 승률 예측은 검증 전입니다."});
   }
-  if(!snapshot){snapshot=std::make_unique<Snapshot>();snapshot->hide_allies=allow_allies && !ally_as_own;snapshot->ally_as_own=ally_as_own;}
+  if(!snapshot){snapshot=std::make_unique<Snapshot>();snapshot->hide_allies=allow_allies;}
   if(!snapshot->update(last_frame<0))return;
   if(last_frame<0)load_bot();
   run_bot(last_frame<0);
@@ -256,14 +267,14 @@ DWORD WINAPI initialize(void*) {
   challenge_mode=GetPrivateProfileIntW(L"pluto",L"challenge",0,(directory/L"bridge.ini").c_str())==1;
   // Allied play builds on the 1-vs-many admission rules, so it requires challenge mode.
   allow_allies=challenge_mode && GetPrivateProfileIntW(L"pluto",L"allies",0,(directory/L"bridge.ini").c_str())==1;
-  ally_as_own=allow_allies && GetPrivateProfileIntW(L"pluto",L"ally_view",0,(directory/L"bridge.ini").c_str())==1;
+  team_resign=allow_allies && GetPrivateProfileIntW(L"pluto",L"team_resign",0,(directory/L"bridge.ini").c_str())==1;
   allow_resign=GetPrivateProfileIntW(L"pluto",L"resign",1,(directory/L"bridge.ini").c_str())!=0;
   if(speed_ms>1000)speed_ms=1000;
   log_file=_wfsopen((directory/"bridge.log").c_str(),L"w",_SH_DENYNO);
   if(!log_file)return 1;
-  std::fprintf(log_file,"{\"stage\":\"initializing\",\"pid\":%lu,\"mode\":\"%s\",\"challenge\":%s,\"allies\":%s,\"ally_view\":\"%s\",\"resign\":%s}\n",GetCurrentProcessId(),
+  std::fprintf(log_file,"{\"stage\":\"initializing\",\"pid\":%lu,\"mode\":\"%s\",\"challenge\":%s,\"allies\":%s,\"team_resign\":%s,\"resign\":%s}\n",GetCurrentProcessId(),
     allow_allies?"allies_experimental":(challenge_mode?"challenge_experimental":(allow_multiplayer?"multiplayer_experimental":"offline_pluto")),
-    challenge_mode?"true":"false",allow_allies?"true":"false",ally_as_own?"own":"hide",allow_resign?"true":"false");std::fflush(log_file);
+    challenge_mode?"true":"false",allow_allies?"true":"false",team_resign?"true":"false",allow_resign?"true":"false");std::fflush(log_file);
   try {
     wchar_t executable[32768]{};GetModuleFileNameW(nullptr,executable,32768);
     if(file_sha256(executable)!=scr_sha256)throw std::runtime_error("Unsupported StarCraft executable SHA-256");

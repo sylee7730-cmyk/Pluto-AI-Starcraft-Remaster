@@ -33,6 +33,13 @@ inline AllyMask make_ally_mask(const Session& s) {
   for(unsigned i=0;i<8;++i)mask.hidden[i]=session_is_local_ally(s,i);
   return mask;
 }
+// Team-aware resignation (opt-in). The model's win estimate cannot include hidden allies,
+// so Pluto's own resignation is refused while any ally is still in the game.
+// victory_state values: 0 playing, 1 defeated, 3 victorious.
+inline bool session_has_living_ally(const Session& s,const std::array<uint8_t,8>& victory_state) {
+  for(unsigned i=0;i<8;++i)if(session_is_local_ally(s,i) && victory_state[i]!=1)return true;
+  return false;
+}
 inline const char* session_rejection(const Session& s,bool allow_multiplayer,bool challenge=false,bool allow_allies=false) {
   if(s.replay)return "replay";
   if(s.self>=8)return "local_observer";
