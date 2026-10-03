@@ -14,12 +14,15 @@
 class LegacyView {
 public:
   bool hide_allies=false;  // Allied play: Pluto's unit lists omit its allies' units.
+  bool ally_as_own=false;  // Allied play: allies' units appear as Pluto's own.
+  bool ally_stasis=false;  // With ally_as_own: present those units as held in stasis (uncontrollable).
+  bool team_stats=false;   // Allied play: Pluto's per-type unit counts and kills include its allies'.
   LegacyView();
   void update();
   void bind(HMODULE pluto);
   void reset();
   void begin_frame(FILE* log,int frame);
-  void discard_pending_turns(){pending_turns.clear();}
+  void discard_pending_turns(){pending_turns.clear();command_filter.selection_blocked=false;}
   unsigned drain(FILE* log,int frame);
   static void __cdecl flush_turn() noexcept;
   uint32_t scr_handle(uint16_t legacy_handle) const;
@@ -39,7 +42,9 @@ private:
   unsigned sent=0;
   struct PendingTurn {int frame;std::vector<Packet> packets;};
   std::vector<PendingTurn> pending_turns;
-  AllyMask hidden_owners;
+  AllyMask hidden_owners,own_owners;
+  CommandFilter command_filter;
+  bool is_foreign_handle(uint16_t legacy_handle) const;
   bool is_hidden(uint32_t raw) const;
   uint32_t skip_hidden(uint32_t raw,unsigned link_offset) const;
   uint32_t address(uint32_t old) const;

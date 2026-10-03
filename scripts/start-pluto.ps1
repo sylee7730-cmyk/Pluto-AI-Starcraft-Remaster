@@ -7,12 +7,12 @@ param(
   [switch]$Multiplayer,
   [switch]$Challenge,
   [switch]$Allies,
-  [switch]$TeamResign,
-  [switch]$NoResign,
+  [ValidateSet('own','stasis','hide')][string]$AllyView='own',
+  [switch]$TeamStats,
   [switch]$VerifyOnly
 )
 $ErrorActionPreference = 'Stop'
-if ($TeamResign -and -not $Allies) { throw '-TeamResign requires -Allies.' }
+if ($TeamStats -and -not $Allies) { throw '-TeamStats requires -Allies.' }
 if ($Allies -and -not $Challenge) { throw '-Allies requires -Challenge (allied play builds on the 1-v-many admission rules).' }
 $projectRoot = Split-Path $PSScriptRoot -Parent
 $bin = Join-Path $projectRoot 'bin'
@@ -56,7 +56,7 @@ if ($previousLogs) {
   foreach ($path in $previousLogs) { Move-Item -LiteralPath $path -Destination $archive }
 }
 Copy-Item -LiteralPath (Join-Path $bin 'pluto-scr.dll') -Destination $runtime -Force
-@('[pluto]',"module=$Pluto","speed_ms=$SpeedMs","multiplayer=$([int]$Multiplayer.IsPresent)","challenge=$([int]$Challenge.IsPresent)","allies=$([int]$Allies.IsPresent)","team_resign=$([int]$TeamResign.IsPresent)","resign=$([int](-not $NoResign.IsPresent))") | Set-Content -LiteralPath (Join-Path $runtime 'bridge.ini') -Encoding Unicode
+@('[pluto]',"module=$Pluto","speed_ms=$SpeedMs","multiplayer=$([int]$Multiplayer.IsPresent)","challenge=$([int]$Challenge.IsPresent)","allies=$([int]$Allies.IsPresent)","ally_view=$AllyView","team_stats=$([int]$TeamStats.IsPresent)") | Set-Content -LiteralPath (Join-Path $runtime 'bridge.ini') -Encoding Unicode
 $previousDraw = $env:BWRL_DRAW
 $previousStraddle = $env:BWRL_STRADDLE
 $previousBudget = $env:BWRL_FRAME_BUDGET_MS
@@ -92,8 +92,13 @@ try {
   if (-not $initialized) { throw "Bridge initialization failed. Read $log" }
   if ($Allies) {
     Write-Output "Experimental allied-team bridge ready in StarCraft process $($game.Id). Choose Top vs Bottom (or Free For All) and put Pluto on a team with allies."
-    Write-Output 'Allied units are hidden from Pluto, so it plays alone and cannot coordinate with them. The original 1v1 model is used; match quality is unverified.'
-    if ($TeamResign) { Write-Output 'Team resign rule: Pluto cannot resign while an ally is still in the game.' }
+    switch ($AllyView) {
+      'hide'   { Write-Output 'Allied units are hidden from Pluto, so it plays alone and cannot coordinate with them.' }
+      'stasis' { Write-Output 'Allied units are shown to Pluto as its own forces held in stasis; orders for them are dropped.' }
+      default  { Write-Output 'Allied units are shown to Pluto as its own forces; orders for them are dropped.' }
+    }
+    if ($TeamStats) { Write-Output 'Team strength experiment: unit counts and kills Pluto reads include its allies.' }
+    Write-Output 'The original 1v1 model is used; match quality is unverified.'
   } elseif ($Challenge) {
     Write-Output "Experimental 1-v-many bridge ready in StarCraft process $($game.Id). Choose Melee, Free For All or Top vs Bottom."
     Write-Output 'Put Pluto alone on its side, with 1-7 opponents. This uses the original 1v1 model; match quality is unverified.'

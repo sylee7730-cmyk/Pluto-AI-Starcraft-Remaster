@@ -51,7 +51,10 @@ bool Snapshot::update(bool first) {
   auto width=read<uint16_t>(g+G::map_width_tiles),height=read<uint16_t>(g+G::map_height_tiles);
   auto self=scr::local_player_id();
   if (!width || width>256 || !height || height>256 || self>=8) return false;
-  const AllyMask allies=hide_allies?make_ally_mask(read_session(g)):AllyMask{};
+  const AllyMask ally_mask=(hide_allies || ally_as_own)?make_ally_mask(read_session(g)):AllyMask{};
+  const AllyMask allies=hide_allies?ally_mask:AllyMask{};
+  remap_owners=ally_as_own?ally_mask:AllyMask{};
+  team_allies=team_stats?make_ally_mask(read_session(g)):AllyMask{};
   data->eventCount=data->eventStringCount=0;
   data->self=self; data->neutral=11; data->enemy=-1;
   data->client_version=BWAPI::CLIENT_VERSION;
@@ -93,7 +96,8 @@ bool Snapshot::update(bool first) {
       if (read<uint8_t>(p+U::order)==0 && read<uint8_t>(p+U::order_state)==1) continue;
       // Own hidden units (e.g. loaded passengers and larva) remain accessible.
       auto visibility=read<uint8_t>(sprite+layout::Sprite::visibility_mask);
-      if (owner!=self && owner!=11 && !(visibility & (1u<<self))) continue;
+      const auto effective_owner=remap_owners.hides(owner)?self:owner;
+      if (effective_owner!=self && owner!=11 && !(visibility & (1u<<self))) continue;
       int id=id_for(p); entries[id].seen=true; current.push_back(id);
     }
   }
@@ -158,6 +162,11 @@ void Snapshot::update_players(uint32_t g) {
       p.completedUnitCount[type]=read<uint32_t>(g+G::completed_units_count+(type*12+i)*4);
       p.deadUnitCount[type]=read<uint32_t>(g+G::deaths+(type*12+i)*4);
       p.killedUnitCount[type]=read<uint32_t>(g+G::unit_kills+(type*12+i)*4);
+      for(unsigned ally=0;ally<8;++ally) if(team_allies.hides(ally)) {  // Team strength experiment.
+        p.allUnitCount[type]+=read<uint32_t>(g+G::all_units_count+(type*12+ally)*4);
+        p.completedUnitCount[type]+=read<uint32_t>(g+G::completed_units_count+(type*12+ally)*4);
+        p.killedUnitCount[type]+=read<uint32_t>(g+G::unit_kills+(type*12+ally)*4);
+      }
       p.visibleUnitCount[type]=p.allUnitCount[type];
       p.isUnitAvailable[type]=read<uint8_t>(g+G::unit_availability+i*228+type)!=0;
     }
@@ -210,7 +219,8 @@ void Snapshot::update_unit(int id) {
   auto byte=[p](size_t o){return read<uint8_t>(p+o);}; auto word=[p](size_t o){return read<uint16_t>(p+o);};
   auto ptr=[p](size_t o){return read<uint32_t>(p+o);}; auto relation=[&](size_t o){return known_id(ptr(o));};
   auto flags=ptr(U::flags); auto sprite=ptr(12); auto visibility=read<uint8_t>(sprite+12);
-  d.player=byte(U::player); d.type=word(U::unit_id);
+  const bool remapped_ally=remap_owners.hides(byte(U::player));
+  d.player=remapped_ally?data->self:byte(U::player); d.type=word(U::unit_id);
   if(d.type>=176 && d.type<=178) d.type=BWAPI::UnitTypes::Resource_Mineral_Field;
   BWAPI::UnitType type(d.type);
   d.positionX=word(40); d.positionY=word(42); d.hitPoints=(read<int32_t>(p+8)+255)/256;
@@ -245,6 +255,7 @@ void Snapshot::update_unit(int id) {
   d.defenseMatrixTimer=byte(U::matrix_timer); d.ensnareTimer=byte(U::ensnare_timer); d.irradiateTimer=byte(U::irradiate_timer);
   d.lockdownTimer=byte(U::lockdown_timer); d.maelstromTimer=byte(U::maelstrom_timer); d.orderTimer=byte(U::order_timer);
   d.plagueTimer=byte(U::plague_timer); d.removeTimer=word(U::death_timer); d.stasisTimer=byte(U::stasis_timer); d.stimTimer=byte(U::stim_timer);
+  if(remapped_ally && ally_stasis && d.stasisTimer==0)d.stasisTimer=1;
   d.isMorphing=d.order==BWAPI::Orders::ZergBirth || d.order==BWAPI::Orders::ZergBuildingMorph || d.order==BWAPI::Orders::ZergUnitMorph || d.order==BWAPI::Orders::Enum::IncompleteMorphing;
   if(d.isMorphing) d.isCompleted=false;
   d.buildType=BWAPI::UnitTypes::None; d.tech=BWAPI::TechTypes::None; d.upgrade=BWAPI::UpgradeTypes::None;

@@ -1,4 +1,6 @@
 #include "messages.h"
+#include <cstdlib>
+#include <cstdio>
 #include <regex>
 
 namespace {
@@ -102,9 +104,16 @@ std::vector<std::string> session_messages_ko(const Session& session,std::string_
   return {u8"플루토 시작 불가: 지원하지 않는 경기 설정입니다.",u8"진단 코드: "+std::string(reason)};
 }
 
+// "0.731" -> "73.1%", "n/a" -> "계산 중". Keeps one decimal like the original value.
+std::string win_percent_ko(std::string_view value) {
+  if(value=="n/a")return u8"계산 중";
+  char buffer[16];
+  std::snprintf(buffer,sizeof(buffer),"%.1f%%",std::atof(std::string(value).c_str())*100.0);
+  return buffer;
+}
 std::string pluto_overlay_text_ko(std::string_view text) {
   static const std::regex win(R"(^F([0-9]+) win=([0-9]+\.[0-9]+|n/a)$)");
   std::smatch match;const std::string value(text);
   if(!std::regex_match(value,match,win))return value;
-  return "F"+match[1].str()+u8" 승률="+(match[2]=="n/a"?u8"계산 중":match[2].str());
+  return "F"+match[1].str()+u8" 승률 "+win_percent_ko(match[2].str());
 }

@@ -15,6 +15,7 @@ std::vector<Item> items;
 bool started=false;
 ULONGLONG last_update=0;
 HWND game_window=nullptr;
+const char* last_hide_reason="never_shown";
 constexpr COLORREF transparent=RGB(255,0,255);
 
 BOOL CALLBACK find_game(HWND window,LPARAM) {
@@ -77,8 +78,10 @@ LRESULT CALLBACK window_proc(HWND window,UINT message,WPARAM wparam,LPARAM lpara
       {std::lock_guard<std::mutex> lock(items_mutex);empty=items.empty();}
       if(!IsWindow(game_window))EnumWindows(find_game,0);
       if(empty || !game_window || GetForegroundWindow()!=game_window || IsIconic(game_window)) {
+        last_hide_reason=empty?"no_shapes":!game_window?"no_game_window":IsIconic(game_window)?"minimized":"not_foreground";
         ShowWindow(window,SW_HIDE);return 0;
       }
+      last_hide_reason="shown";
       RECT client{};GetClientRect(game_window,&client);POINT origin{};ClientToScreen(game_window,&origin);
       const int height=std::min(client.bottom,client.right*3/4),width=height*4/3;
       SetWindowPos(window,HWND_TOPMOST,origin.x+(client.right-width)/2,origin.y+(client.bottom-height)/2,
@@ -128,3 +131,6 @@ void update_overlay(const BWAPI::GameData& data) {
   if(!started) {auto thread=CreateThread(nullptr,0,overlay_thread,nullptr,0,nullptr);if(thread){started=true;CloseHandle(thread);}}
 }
 void clear_overlay() {std::lock_guard<std::mutex> lock(items_mutex);items.clear();last_update=0;}
+std::string overlay_status() {
+  return std::string(started?"thread_started":"thread_not_started")+","+(game_window?"game_window_found":"game_window_missing")+","+last_hide_reason;
+}

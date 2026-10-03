@@ -86,15 +86,6 @@ int main(){
   // Allies mask is empty when nobody is allied (default games behave as before).
   Session plain;plain.self=3;plain.players[3]=2;plain.players[6]=2;
   for(unsigned i=0;i<8;++i)require(!make_ally_mask(plain).hides(i));
-  // Team resign: Pluto may only resign once every ally has been defeated.
-  std::array<uint8_t,8> victory{};
-  require(session_has_living_ally(team,victory));                       // allies 1 and 2 are still playing
-  victory[1]=1;require(session_has_living_ally(team,victory));          // ally 2 remains
-  victory[2]=1;require(!session_has_living_ally(team,victory));         // every ally defeated
-  victory[3]=1;victory[4]=1;require(!session_has_living_ally(team,victory)); // enemy states are irrelevant
-  victory[2]=0;require(session_has_living_ally(team,victory));
-  victory[1]=3;victory[2]=3;require(session_has_living_ally(team,victory));  // victorious allies are still in the game
-  require(!session_has_living_ally(plain,victory));                     // no allies at all
   std::puts("default 1v1 regressions and challenge 1v1..1v7, every slot, enemy teams, allied bot, UMS, shared-control teams, offline and multiplayer checks passed");
   std::puts("opt-in allied play: 3v3 admission, ally mask, one-way alliances, nonparticipants and unchanged restrictions passed");
 }

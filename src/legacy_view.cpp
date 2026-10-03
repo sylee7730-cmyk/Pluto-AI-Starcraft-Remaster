@@ -5,6 +5,7 @@
 #include "commands.h"
 #include "session_reader.h"
 #include "unit_list.h"
+#include "team_stats.h"
 #include <algorithm>
 #include <cstring>
 #include <stdexcept>
@@ -45,6 +46,13 @@ uint32_t LegacyView::address(uint32_t old) const {
   if(old<first || old>=last)throw std::runtime_error("Out of range legacy address");
   return reinterpret_cast<uint32_t>(memory.data())+old-first;
 }
+// True when a legacy handle names a unit Pluto believes it owns but the game would
+// not let it command (an ally's unit shown as Pluto's own).
+bool LegacyView::is_foreign_handle(uint16_t id) const {
+  const unsigned index=id&0x7ff;if(!index || index>slots.size())return false;
+  const auto& slot=slots[index-1];if(!slot.raw || slot.generation!=(id>>11))return false;
+  return own_owners.hides(scr::read<uint8_t>(slot.raw+layout::Unit::player));
+}
 bool LegacyView::is_hidden(uint32_t raw) const {
   return raw && hidden_owners.hides(scr::read<uint8_t>(raw+layout::Unit::player));
 }
@@ -78,7 +86,9 @@ void LegacyView::sprite(uint32_t dest,uint32_t raw) {
 void LegacyView::update() {
   raw_start=scr::units();raw_length=scr::read<uint32_t>(scr::addr(0x10436f4));
   if(!raw_start || !raw_length || raw_length>8192)throw std::runtime_error("Invalid SCR unit vector");
-  hidden_owners=hide_allies&&scr::game()?make_ally_mask(read_session(scr::game())):AllyMask{};
+  const AllyMask ally_mask=(hide_allies || ally_as_own) && scr::game()?make_ally_mask(read_session(scr::game())):AllyMask{};
+  hidden_owners=hide_allies?ally_mask:AllyMask{};
+  own_owners=ally_as_own?ally_mask:AllyMask{};
   std::unordered_set<uint32_t> present;
   for(unsigned i=0;i<raw_length;++i) {
     auto raw=raw_start+i*336;
@@ -100,6 +110,8 @@ void LegacyView::update() {
     }
   }
   std::memcpy(reinterpret_cast<void*>(address(0x57f0f0)),reinterpret_cast<void*>(scr::game()),layout::Game::size);
+  if(team_stats && scr::game())
+    aggregate_team_stats(reinterpret_cast<uint8_t*>(address(0x57f0f0)),scr::local_player_id(),make_ally_mask(read_session(scr::game())));
   std::memcpy(reinterpret_cast<void*>(address(0x57eee0)),reinterpret_cast<void*>(scr::players()),12*36);
   put<uint32_t>(address(0x512688),scr::local_player_id());
   put<uint32_t>(address(0x59688c),scr::is_multiplayer()?1u:0u);put<uint16_t>(address(0x596904),2);
@@ -110,6 +122,11 @@ void LegacyView::update() {
   for(unsigned i=0;i<slots.size();++i)if(slots[i].raw) {
     const auto raw=slots[i].raw,dest=address(unit_base+i*336);
     std::memcpy(reinterpret_cast<void*>(dest),reinterpret_cast<void*>(raw),336);
+    if(own_owners.hides(scr::read<uint8_t>(raw+layout::Unit::player))) {  // Allies shown as Pluto's own forces.
+      put<uint8_t>(dest+layout::Unit::player,static_cast<uint8_t>(scr::local_player_id()));
+      // Optional experiment: a unit in stasis is one the model knows it cannot command.
+      if(ally_stasis && scr::read<uint8_t>(raw+layout::Unit::stasis_timer)==0)put<uint8_t>(dest+layout::Unit::stasis_timer,1);
+    }
     put<uint32_t>(dest,unit(skip_hidden(scr::read<uint32_t>(raw),0)));
     put<uint32_t>(dest+4,unit(skip_hidden(scr::read<uint32_t>(raw+4),4)));
     for(unsigned offset:{20,92,104,108,112,124,128,236,240,244,252,284})put<uint32_t>(dest+offset,unit(scr::read<uint32_t>(raw+offset)));
@@ -176,7 +193,9 @@ unsigned LegacyView::drain(FILE*,int frame) {
   const auto size=scr::read<uint32_t>(address(0x654aa0));
   if(size>512)throw std::runtime_error("Legacy command queue overflow");
   if(size){
-    auto packets=translate_commands(reinterpret_cast<const uint8_t*>(address(0x654880)),size,[this](uint16_t id){return scr_handle(id);});
+    if(ally_as_own && !command_filter.foreign)command_filter.foreign=[this](uint16_t id){return is_foreign_handle(id);};
+    auto packets=translate_commands(reinterpret_cast<const uint8_t*>(address(0x654880)),size,[this](uint16_t id){return scr_handle(id);},
+      ally_as_own?&command_filter:nullptr);
     // SCR's offline turn queue applies commands one frame earlier than Pluto's
     // 1.16.1 training environment. Retain one frame to preserve the measured
     // four-frame observation-to-effect delay, including selection ordering.
