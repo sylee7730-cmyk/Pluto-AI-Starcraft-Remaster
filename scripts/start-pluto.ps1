@@ -10,6 +10,7 @@ param(
   [ValidateSet('own','stasis','hide')][string]$AllyView='own',
   [ValidateSet('off','army','kills','all')][string]$TeamStats='off',
   [switch]$Revive,
+  [ValidateRange(0,255)][int]$PauseKey=145,
   [switch]$VerifyOnly
 )
 $ErrorActionPreference = 'Stop'
@@ -59,7 +60,7 @@ if ($previousLogs) {
   foreach ($path in $previousLogs) { Move-Item -LiteralPath $path -Destination $archive }
 }
 Copy-Item -LiteralPath (Join-Path $bin 'pluto-scr.dll') -Destination $runtime -Force
-@('[pluto]',"module=$Pluto","speed_ms=$SpeedMs","multiplayer=$([int]$Multiplayer.IsPresent)","challenge=$([int]$Challenge.IsPresent)","allies=$([int]$Allies.IsPresent)","ally_view=$AllyView","team_stats=$TeamStats","revive=$([int]$Revive.IsPresent)") | Set-Content -LiteralPath (Join-Path $runtime 'bridge.ini') -Encoding Unicode
+@('[pluto]',"module=$Pluto","speed_ms=$SpeedMs","multiplayer=$([int]$Multiplayer.IsPresent)","challenge=$([int]$Challenge.IsPresent)","allies=$([int]$Allies.IsPresent)","ally_view=$AllyView","team_stats=$TeamStats","revive=$([int]$Revive.IsPresent)","pause_key=$PauseKey") | Set-Content -LiteralPath (Join-Path $runtime 'bridge.ini') -Encoding Unicode
 $previousDraw = $env:BWRL_DRAW
 $previousStraddle = $env:BWRL_STRADDLE
 $previousBudget = $env:BWRL_FRAME_BUDGET_MS

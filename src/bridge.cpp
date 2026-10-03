@@ -1,3 +1,4 @@
+#include <atomic>
 #include <Windows.h>
 #include <MinHook.h>
 #include <BWAPI.h>
@@ -47,11 +48,28 @@ unsigned graph_frames=0,graph_shapes=0;
 // current game. Pluto stops acting once it has decided to resign, so merely
 // blocking the departure is not enough. Capped so a hopeless game cannot freeze
 // the client over and over (each restart reloads the inference engine).
+// Shown in bridge.log ("version") and at the start of every match, so it is clear which build runs.
+constexpr char bridge_version[]="v12";
 bool revive_on_resign=false;
 bool pluto_noresign=false;        // The loaded pluto.dll carries the no-resign patch (never sends gg/leave).
 constexpr unsigned max_revives=10;
 unsigned revive_count=0;
 bool revive_requested=false,reviving=false;
+// Manual control: a hotkey toggles whether Pluto's commands reach the game. Pluto controls the
+// same player the human does and issues orders every 6 frames, so manual orders are otherwise
+// overwritten within a fraction of a second. RegisterHotKey runs on its own thread; the game
+// thread notices the press count change and acts on it.
+UINT pause_vk=VK_SCROLL;  // bridge.ini pause_key=<virtual-key code>; 0 disables the hotkey.
+std::atomic<unsigned> pause_presses{0};
+std::atomic<bool> pause_hotkey_failed{false};
+unsigned pause_seen=0;
+bool manual_pause=false,pause_thread_started=false;
+DWORD WINAPI pause_hotkey_thread(LPVOID) {
+  if(!RegisterHotKey(nullptr,1,MOD_NOREPEAT,pause_vk)){pause_hotkey_failed=true;return 1;}
+  MSG message;
+  while(GetMessageW(&message,nullptr,0,0)>0)if(message.message==WM_HOTKEY && message.wParam==1)++pause_presses;
+  UnregisterHotKey(nullptr,1);return 0;
+}
 unsigned submitted_packets=0;
 DWORD game_thread=0;
 int speed_ms=0;
@@ -113,6 +131,9 @@ void load_bot() {
   const auto init=reinterpret_cast<void (__cdecl*)(BWAPI::Game*)>(GetProcAddress(bot_module,"gameInit"));
   const auto create=reinterpret_cast<BWAPI::AIModule* (__cdecl*)()>(GetProcAddress(bot_module,"newAIModule"));
   if(!init || !create)throw std::runtime_error("Missing BWAPI exports");
+  if(pause_vk && !pause_thread_started) {
+    if(auto thread=CreateThread(nullptr,0,pause_hotkey_thread,nullptr,0,nullptr)){pause_thread_started=true;CloseHandle(thread);}
+  }
   init(api_game.get());bot=create();
   if(!bot)throw std::runtime_error("Pluto returned null");
   std::fprintf(log_file,"{\"stage\":\"bot_on_start_begin\"}\n");std::fflush(log_file);
@@ -123,6 +144,17 @@ void load_bot() {
 void run_bot(bool first) {
   if(!bot)return;
   auto& d=*snapshot->data;
+  if(pause_hotkey_failed.exchange(false))
+    print_local({u8"일시정지 단축키를 등록하지 못했습니다 (다른 프로그램이 같은 키를 쓰는 중일 수 있습니다)."});
+  if(const unsigned presses=pause_presses.load();presses!=pause_seen) {
+    if((presses-pause_seen)%2==1)manual_pause=!manual_pause;  // Two quick presses cancel out.
+    pause_seen=presses;
+    std::fprintf(log_file,"{\"stage\":\"manual_pause\",\"on\":%s,\"frame\":%d}\n",manual_pause?"true":"false",d.frameCount);
+    const std::string key=pause_vk==VK_SCROLL?"Scroll Lock":u8"설정한 단축키";
+    if(manual_pause)print_local({u8"플루토 일시정지: 지금부터 직접 조종할 수 있습니다.",key+u8" 키로 다시 플루토에게 맡깁니다."});
+    else print_local({u8"플루토 재개: 다시 플루토가 조종합니다."});
+  }
+  legacy->hold_commands=manual_pause;
   legacy->update();
   legacy->begin_frame(log_file,d.frameCount);
   if(!first)api_game->onMatchFrame();
@@ -171,8 +203,8 @@ void run_bot(bool first) {
   }
   if(d.shapeCount>0){++graph_frames;graph_shapes+=static_cast<unsigned>(d.shapeCount);}
   if(d.frameCount>0 && d.frameCount%2400==0)
-    std::fprintf(log_file,"{\"graph_diag\":true,\"frame\":%d,\"frames_with_shapes\":%u,\"shapes\":%u,\"overlay\":\"%s\"}\n",
-      d.frameCount,graph_frames,graph_shapes,overlay_status().c_str());
+    std::fprintf(log_file,"{\"graph_diag\":true,\"frame\":%d,\"frames_with_shapes\":%u,\"shapes\":%u,\"overlay\":\"%s\",\"chart\":\"%s\"}\n",
+      d.frameCount,graph_frames,graph_shapes,overlay_status().c_str(),overlay_chart_summary().c_str());
   update_overlay(d);
   d.commandCount=d.unitCommandCount=d.shapeCount=d.stringCount=0;
   std::fflush(log_file);
@@ -188,7 +220,7 @@ void update_frame() {
     if(api_game)api_game->onMatchEnd();
     BWAPI::BroodwarPtr=nullptr;BWAPI::BWAPIClient.data=nullptr;
     api_game.reset();snapshot.reset();bot=nullptr;
-    last_frame=-1;match_ended=false;submitted_packets=0;
+    last_frame=-1;match_ended=false;submitted_packets=0;manual_pause=false;
   }
   if(match_ended)return;
   if(revive_requested) {
@@ -234,6 +266,8 @@ void update_frame() {
     std::fprintf(log_file,"{\"stage\":\"session_accepted\",\"multiplayer\":%s,\"self\":%u,\"game_type\":%u,\"participants\":%u,\"challenge\":%s}\n",
       session.multiplayer?"true":"false",session.self,session.game_type,session_participant_count(session),challenge_mode?"true":"false");
     if(pluto_noresign && !reviving)print_local({u8"기권 코드 제거 패치가 적용된 Pluto입니다: 승률이 낮아도 gg를 치지 않고 끝까지 싸웁니다."});
+    if(!reviving)print_local({u8"플루토 팀전 브리지 "+std::string(bridge_version)});
+    if(pause_vk && !reviving)print_local({u8"직접 조종하려면: "+std::string(pause_vk==VK_SCROLL?"Scroll Lock":u8"설정한 단축키")+u8" 키로 플루토를 일시정지/재개합니다."});
     if(revive_on_resign && !reviving)print_local({u8"기권 방지(실험): 플루토가 gg를 치면 나가지 않고 그 자리에서 다시 깨웁니다."});
     if(reviving){reviving=false;goto session_notices_done;}
     if(allow_allies && team_stats==TeamStatsMode::army)print_local({u8"팀 전력 합산(전투 유닛): 플루토가 읽는 전투 유닛 수·킬 수에 아군 것을 더합니다 (실험)."});
@@ -307,10 +341,12 @@ DWORD WINAPI initialize(void*) {
   GetPrivateProfileStringW(L"pluto",L"team_stats",L"off",team_stats_text,32,(directory/L"bridge.ini").c_str());
   team_stats=allow_allies?parse_team_stats_mode(team_stats_text):TeamStatsMode::off;
   revive_on_resign=GetPrivateProfileIntW(L"pluto",L"revive",0,(directory/L"bridge.ini").c_str())==1;
+  pause_vk=GetPrivateProfileIntW(L"pluto",L"pause_key",VK_SCROLL,(directory/L"bridge.ini").c_str());
+  if(pause_vk>255)pause_vk=0;
   if(speed_ms>1000)speed_ms=1000;
   log_file=_wfsopen((directory/"bridge.log").c_str(),L"w",_SH_DENYNO);
   if(!log_file)return 1;
-  std::fprintf(log_file,"{\"stage\":\"initializing\",\"pid\":%lu,\"mode\":\"%s\",\"challenge\":%s,\"allies\":%s,\"ally_view\":\"%s\",\"team_stats\":\"%s\",\"revive\":%s}\n",GetCurrentProcessId(),
+  std::fprintf(log_file,"{\"stage\":\"initializing\",\"version\":\"%s\",\"pid\":%lu,\"mode\":\"%s\",\"challenge\":%s,\"allies\":%s,\"ally_view\":\"%s\",\"team_stats\":\"%s\",\"revive\":%s}\n",bridge_version,GetCurrentProcessId(),
     allow_allies?"allies_experimental":(challenge_mode?"challenge_experimental":(allow_multiplayer?"multiplayer_experimental":"offline_pluto")),
     challenge_mode?"true":"false",allow_allies?"true":"false",!allow_allies?"n/a":(!ally_as_own?"hide":(ally_stasis?"stasis":"own")),team_stats_mode_name(team_stats),revive_on_resign?"true":"false");std::fflush(log_file);
   try {

@@ -4,14 +4,20 @@
 #include "overlay.h"
 #include "messages.h"
 #include <algorithm>
+#include <cstdio>
+#include <cstdlib>
 #include <mutex>
 #include <string>
 #include <vector>
 
 namespace {
 struct Item { BWAPIC::Shape shape; std::wstring text; };
+// What the bridge itself reads off Pluto's drawing: the chart's outer box and the latest
+// win value, so the percentage can be shown next to the chart wherever Pluto puts its text.
+struct Chart { bool have_box=false;int x1=0,y1=0,x2=0,y2=0;bool have_win=false,unavailable=false;double win=0;int text_shapes=0; };
 std::mutex items_mutex;
 std::vector<Item> items;
+Chart chart;
 bool started=false;
 ULONGLONG last_update=0;
 HWND game_window=nullptr;
@@ -37,8 +43,8 @@ bool foreground_is_ours() {
   return foreground && pid==GetCurrentProcessId();
 }
 void paint(HDC target,const RECT& area) {
-  std::vector<Item> copy;
-  {std::lock_guard<std::mutex> lock(items_mutex);copy=items;}
+  std::vector<Item> copy;Chart info;
+  {std::lock_guard<std::mutex> lock(items_mutex);copy=items;info=chart;}
   HDC dc=CreateCompatibleDC(target);
   HBITMAP bitmap=CreateCompatibleBitmap(target,640,480);
   auto old_bitmap=SelectObject(dc,bitmap);
@@ -71,6 +77,24 @@ void paint(HDC target,const RECT& area) {
     }
     SelectObject(dc,old_brush);if(s.isSolid)DeleteObject(brush);
     SelectObject(dc,old_pen);DeleteObject(pen);
+  }
+  if(info.have_win) {
+    const std::wstring label=info.unavailable?L"승률 계산 중":L"승률 "+[&]{
+      const auto text=win_percent_ko(std::to_string(info.win));
+      const int count=MultiByteToWideChar(CP_UTF8,0,text.data(),static_cast<int>(text.size()),nullptr,0);
+      std::wstring wide(count>0?count:0,L' ');
+      if(count>0)MultiByteToWideChar(CP_UTF8,0,text.data(),static_cast<int>(text.size()),wide.data(),count);
+      return wide;}();
+    auto big=CreateFontW(-14,0,0,0,FW_BOLD,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,
+      CLIP_DEFAULT_PRECIS,NONANTIALIASED_QUALITY,DEFAULT_PITCH,L"Malgun Gothic");
+    auto previous=SelectObject(dc,big);
+    // Just above the chart's top-left corner; inside it when the chart touches the screen top.
+    int x=info.have_box?info.x1:8,y=info.have_box?info.y1-17:8;
+    if(y<0)y=info.y1+3;
+    RECT shadow{x+1,y+1,640,480},label_rect{x,y,640,480};
+    SetTextColor(dc,RGB(0,0,0));DrawTextW(dc,label.c_str(),static_cast<int>(label.size()),&shadow,DT_LEFT|DT_TOP|DT_NOPREFIX);
+    SetTextColor(dc,RGB(255,255,100));DrawTextW(dc,label.c_str(),static_cast<int>(label.size()),&label_rect,DT_LEFT|DT_TOP|DT_NOPREFIX);
+    SelectObject(dc,previous);DeleteObject(big);
   }
   SetStretchBltMode(target,COLORONCOLOR);
   StretchBlt(target,0,0,area.right,area.bottom,dc,0,0,640,480,SRCCOPY);
@@ -124,10 +148,25 @@ void update_overlay(const BWAPI::GameData& data) {
   if(data.shapeCount<=0)return;
   const auto now=GetTickCount64();if(now-last_update<100)return;last_update=now;
   std::vector<Item> next;next.reserve(data.shapeCount);
+  Chart seen;long long best_area=0;
   for(int i=0;i<data.shapeCount;++i) {
     auto shape=data.shapes[i];
+    if(shape.type==BWAPIC::ShapeType::Text && shape.extra1>=0 && shape.extra1<data.stringCount) {
+      ++seen.text_shapes;
+      std::string raw;
+      for(const unsigned char c:std::string(data.strings[shape.extra1]))
+        if(c>=32 || c=='\n' || c=='\t')raw.push_back(static_cast<char>(c));
+      int frame=0;double value=0;bool unavailable=false;
+      // Any coordinate type: only the text matters here, not where Pluto drew it.
+      if(parse_win_text(raw,frame,value,unavailable)){seen.have_win=true;seen.unavailable=unavailable;seen.win=value;}
+    }
     // Pluto's win-probability chart uses screen coordinates exclusively.
     if(shape.ctype!=BWAPI::CoordinateType::Screen)continue;
+    if(shape.type==BWAPIC::ShapeType::Box) {  // The chart's frame is the largest screen box.
+      const long long area=static_cast<long long>(std::abs(shape.x2-shape.x1))*std::abs(shape.y2-shape.y1);
+      if(area>best_area){best_area=area;seen.have_box=true;seen.x1=std::min(shape.x1,shape.x2);seen.y1=std::min(shape.y1,shape.y2);
+        seen.x2=std::max(shape.x1,shape.x2);seen.y2=std::max(shape.y1,shape.y2);}
+    }
     Item item{shape,{}};
     if(shape.type==BWAPIC::ShapeType::Text && shape.extra1>=0 && shape.extra1<data.stringCount) {
       std::string clean;
@@ -142,10 +181,17 @@ void update_overlay(const BWAPI::GameData& data) {
     }
     next.push_back(std::move(item));
   }
-  {std::lock_guard<std::mutex> lock(items_mutex);items=std::move(next);}
+  {std::lock_guard<std::mutex> lock(items_mutex);items=std::move(next);chart=seen;}
   if(!started) {auto thread=CreateThread(nullptr,0,overlay_thread,nullptr,0,nullptr);if(thread){started=true;CloseHandle(thread);}}
 }
-void clear_overlay() {std::lock_guard<std::mutex> lock(items_mutex);items.clear();last_update=0;}
+void clear_overlay() {std::lock_guard<std::mutex> lock(items_mutex);items.clear();chart=Chart{};last_update=0;}
+std::string overlay_chart_summary() {
+  std::lock_guard<std::mutex> lock(items_mutex);
+  char buffer[160];
+  std::snprintf(buffer,sizeof(buffer),"text_shapes=%d,win_text=%s,win=%.3f,box=%s(%d,%d,%d,%d)",chart.text_shapes,
+    chart.have_win?(chart.unavailable?"n/a":"yes"):"no",chart.win,chart.have_box?"yes":"no",chart.x1,chart.y1,chart.x2,chart.y2);
+  return buffer;
+}
 std::string overlay_status() {
   return std::string(started?"thread_started":"thread_not_started")+","+(game_window?"game_window_found":"game_window_missing")+","+last_hide_reason;
 }

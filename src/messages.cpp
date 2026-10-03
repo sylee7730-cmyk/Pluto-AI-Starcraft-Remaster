@@ -104,15 +104,31 @@ std::vector<std::string> session_messages_ko(const Session& session,std::string_
   return {u8"플루토 시작 불가: 지원하지 않는 경기 설정입니다.",u8"진단 코드: "+std::string(reason)};
 }
 
-// "0.731" -> "73.1%", "n/a" -> "계산 중". Keeps one decimal like the original value.
+// Pluto's win value runs from -1 (certain loss) to +1 (certain win); its own resign rule
+// fires at -0.95, which a 0..1 scale could never reach. Probability = (value + 1) / 2.
+double win_probability_percent(double value) {
+  if(value<-1.0)value=-1.0;
+  if(value>1.0)value=1.0;
+  return (value+1.0)*50.0;
+}
+// "0.5" -> "75.0%", "-0.5" -> "25.0%", "n/a" -> "계산 중".
 std::string win_percent_ko(std::string_view value) {
   if(value=="n/a")return u8"계산 중";
   char buffer[16];
-  std::snprintf(buffer,sizeof(buffer),"%.1f%%",std::atof(std::string(value).c_str())*100.0);
+  std::snprintf(buffer,sizeof(buffer),"%.1f%%",win_probability_percent(std::atof(std::string(value).c_str())));
   return buffer;
 }
+bool parse_win_text(std::string_view text,int& frame,double& value,bool& unavailable) {
+  static const std::regex win(R"(^F([0-9]+) win=(-?[0-9]+\.[0-9]+|n/a)$)");
+  std::smatch match;const std::string source(text);
+  if(!std::regex_match(source,match,win))return false;
+  frame=std::atoi(match[1].str().c_str());
+  unavailable=match[2].str()=="n/a";
+  value=unavailable?0.0:std::atof(match[2].str().c_str());
+  return true;
+}
 std::string pluto_overlay_text_ko(std::string_view text) {
-  static const std::regex win(R"(^F([0-9]+) win=([0-9]+\.[0-9]+|n/a)$)");
+  static const std::regex win(R"(^F([0-9]+) win=(-?[0-9]+\.[0-9]+|n/a)$)");
   std::smatch match;const std::string value(text);
   if(!std::regex_match(value,match,win))return value;
   return "F"+match[1].str()+u8" 승률 "+win_percent_ko(match[2].str());

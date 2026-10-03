@@ -22,6 +22,7 @@ void LegacyView::reset() {
 }
 void LegacyView::begin_frame(FILE* log,int frame) {
   current_view=this;frame_log=log;frame_number=frame;sent=0;
+  if(hold_commands)discard_pending_turns();  // Dropped before being sent, including ones queued earlier.
   const auto send=reinterpret_cast<void (__cdecl*)(const uint8_t*,size_t)>(scr::send_command());
   for(auto turn=pending_turns.begin();turn!=pending_turns.end();) {
     if(turn->frame>=frame){++turn;continue;}

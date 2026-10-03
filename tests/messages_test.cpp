@@ -77,10 +77,16 @@ int main() {
   for(const auto reason:{"local_allies_not_supported","requires_opponent","offline_requires_computers"})
     check_utf8(session_messages_ko(s,reason,true));
 
-  require(pluto_overlay_text_ko("F1500 win=0.731")==u8"F1500 승률 73.1%","Win estimate changed");
+  require(pluto_overlay_text_ko("F1500 win=0.500")==u8"F1500 승률 75.0%","Win estimate changed");
+  require(pluto_overlay_text_ko("F90 win=-0.500")==u8"F90 승률 25.0%","Negative win estimate must be accepted");
   require(pluto_overlay_text_ko("F0 win=n/a")==u8"F0 승률 계산 중","Unavailable win estimate misrepresented");
-  require(win_percent_ko("0.5")=="50.0%" && win_percent_ko("1.0")=="100.0%" && win_percent_ko("0.0")=="0.0%","Percent formatting");
-  require(win_percent_ko("0.9999")=="100.0%" && win_percent_ko("0.004")=="0.4%","Percent rounding");
+  require(win_percent_ko("0.5")=="75.0%" && win_percent_ko("1.0")=="100.0%" && win_percent_ko("0.0")=="50.0%","Percent formatting");
+  require(win_percent_ko("-1.0")=="0.0%" && win_percent_ko("-0.95")=="2.5%" && win_percent_ko("-0.25")=="37.5%","Negative percent formatting");
+  require(win_percent_ko("5.0")=="100.0%" && win_percent_ko("-5.0")=="0.0%","Percent clamping");
+  { int frame=0;double value=0;bool na=false;
+    require(parse_win_text("F1500 win=-0.250",frame,value,na) && frame==1500 && value==-0.25 && !na,"Win text parsing");
+    require(parse_win_text("F0 win=n/a",frame,value,na) && na,"Unavailable win text parsing");
+    require(!parse_win_text("hello",frame,value,na) && !parse_win_text("F1 win=",frame,value,na),"Non-win text must be rejected"); }
   require(pluto_overlay_text_ko("Other label")=="Other label","Unknown overlay text changed");
   check_utf8({pluto_overlay_text_ko("F1500 win=0.731")});
   std::puts("Korean UTF-8, observed split warnings, numeric values, model IDs, session remedies and unknown text checks passed");

@@ -24,6 +24,7 @@ public:
   void reset();
   void begin_frame(FILE* log,int frame);
   void discard_pending_turns(){pending_turns.clear();command_filter.selection_blocked=false;}
+  bool hold_commands=false;  // Manual control: Pluto keeps thinking but none of its commands reach the game.
   unsigned drain(FILE* log,int frame);
   static void __cdecl flush_turn() noexcept;
   uint32_t scr_handle(uint16_t legacy_handle) const;
