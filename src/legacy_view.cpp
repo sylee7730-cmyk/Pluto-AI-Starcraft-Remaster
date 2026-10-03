@@ -110,8 +110,8 @@ void LegacyView::update() {
     }
   }
   std::memcpy(reinterpret_cast<void*>(address(0x57f0f0)),reinterpret_cast<void*>(scr::game()),layout::Game::size);
-  if(team_stats && scr::game())
-    aggregate_team_stats(reinterpret_cast<uint8_t*>(address(0x57f0f0)),scr::local_player_id(),make_ally_mask(read_session(scr::game())));
+  if(team_stats!=TeamStatsMode::off && scr::game())
+    aggregate_team_stats(reinterpret_cast<uint8_t*>(address(0x57f0f0)),scr::local_player_id(),make_ally_mask(read_session(scr::game())),team_stats);
   std::memcpy(reinterpret_cast<void*>(address(0x57eee0)),reinterpret_cast<void*>(scr::players()),12*36);
   put<uint32_t>(address(0x512688),scr::local_player_id());
   put<uint32_t>(address(0x59688c),scr::is_multiplayer()?1u:0u);put<uint16_t>(address(0x596904),2);

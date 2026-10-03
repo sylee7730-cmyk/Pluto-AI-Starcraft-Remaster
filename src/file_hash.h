@@ -30,3 +30,7 @@ inline std::string file_sha256(const std::filesystem::path& path) {
 }
 inline constexpr char scr_sha256[]="32dbbdd001dd381cb1b3a719b7ad1fc918a9d4bc99661c675e00254efecca827";
 inline constexpr char pluto_sha256[]="7e360b643c8c0156c03fe0cad9972a3058138ccfe22f921c5b4e0cd0aaf0abef";
+// The same DLL with its resignation disabled: a 4-byte patch (the "frames below the
+// win threshold" comparison at RVA 0xb155 becomes `cmp edx,0x7fffffff`, which is
+// never exceeded). Applied locally by the launcher; everything else is identical.
+inline constexpr char pluto_noresign_sha256[]="ed19fff2ff212fcbf8e7b286aebb825754ce8d747cda45e03a75d70f146e0224";

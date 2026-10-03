@@ -18,14 +18,23 @@ HWND game_window=nullptr;
 const char* last_hide_reason="never_shown";
 constexpr COLORREF transparent=RGB(255,0,255);
 
-BOOL CALLBACK find_game(HWND window,LPARAM) {
+// A top-level, visible, reasonably large window of this process: the game's
+// render window, or one of its siblings (online play creates several).
+bool looks_like_game_window(HWND window) {
+  if(!window)return false;
   DWORD pid=0;GetWindowThreadProcessId(window,&pid);
   RECT rect{};GetClientRect(window,&rect);
-  if(pid==GetCurrentProcessId() && IsWindowVisible(window) && !GetWindow(window,GW_OWNER) &&
-     !(GetWindowLongPtrW(window,GWL_EXSTYLE)&WS_EX_TOOLWINDOW) && rect.right>=640 && rect.bottom>=480) {
-    game_window=window;return FALSE;
-  }
+  return pid==GetCurrentProcessId() && IsWindowVisible(window) && !GetWindow(window,GW_OWNER) &&
+     !(GetWindowLongPtrW(window,GWL_EXSTYLE)&WS_EX_TOOLWINDOW) && rect.right>=640 && rect.bottom>=480;
+}
+BOOL CALLBACK find_game(HWND window,LPARAM) {
+  if(looks_like_game_window(window)){game_window=window;return FALSE;}
   return TRUE;
+}
+bool foreground_is_ours() {
+  DWORD pid=0;const HWND foreground=GetForegroundWindow();
+  if(foreground)GetWindowThreadProcessId(foreground,&pid);
+  return foreground && pid==GetCurrentProcessId();
 }
 void paint(HDC target,const RECT& area) {
   std::vector<Item> copy;
@@ -76,9 +85,15 @@ LRESULT CALLBACK window_proc(HWND window,UINT message,WPARAM wparam,LPARAM lpara
     case WM_TIMER:{
       bool empty;
       {std::lock_guard<std::mutex> lock(items_mutex);empty=items.empty();}
+      // Online play gives the game process more than one large top-level window, so
+      // the window the player is actually looking at may not be the first one found.
+      // Follow whichever of this process's game-like windows is in the foreground.
+      const HWND foreground=GetForegroundWindow();
+      if(foreground!=game_window && looks_like_game_window(foreground))game_window=foreground;
       if(!IsWindow(game_window))EnumWindows(find_game,0);
-      if(empty || !game_window || GetForegroundWindow()!=game_window || IsIconic(game_window)) {
-        last_hide_reason=empty?"no_shapes":!game_window?"no_game_window":IsIconic(game_window)?"minimized":"not_foreground";
+      const bool ours_in_front=foreground_is_ours();
+      if(empty || !game_window || !ours_in_front || IsIconic(game_window)) {
+        last_hide_reason=empty?"no_shapes":!game_window?"no_game_window":IsIconic(game_window)?"minimized":"not_foreground_other_app";
         ShowWindow(window,SW_HIDE);return 0;
       }
       last_hide_reason="shown";

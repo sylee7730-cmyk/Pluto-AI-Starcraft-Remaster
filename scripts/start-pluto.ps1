@@ -8,16 +8,18 @@ param(
   [switch]$Challenge,
   [switch]$Allies,
   [ValidateSet('own','stasis','hide')][string]$AllyView='own',
-  [switch]$TeamStats,
+  [ValidateSet('off','army','kills','all')][string]$TeamStats='off',
+  [switch]$Revive,
   [switch]$VerifyOnly
 )
 $ErrorActionPreference = 'Stop'
-if ($TeamStats -and -not $Allies) { throw '-TeamStats requires -Allies.' }
+if ($TeamStats -ne 'off' -and -not $Allies) { throw '-TeamStats requires -Allies.' }
 if ($Allies -and -not $Challenge) { throw '-Allies requires -Challenge (allied play builds on the 1-v-many admission rules).' }
 $projectRoot = Split-Path $PSScriptRoot -Parent
 $bin = Join-Path $projectRoot 'bin'
+if ($Revive) { Write-Output 'Revive experiment: when Pluto resigns it is restarted in place instead of leaving (up to 10 times per match).' }
 $runtime = Join-Path $projectRoot $(if ($Allies) { 'runtime-allies' } elseif ($Challenge) { 'runtime-challenge' } elseif ($Multiplayer) { 'runtime-multiplayer' } else { 'runtime' })
-function Assert-Hash([string]$Path, [string]$Expected) {
+function Assert-Hash([string]$Path, [string[]]$Expected) {
   if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { throw "Missing file: $Path" }
   # Use the built-in .NET implementation, including on Windows PowerShell 5.1
   # installations where the Get-FileHash function is not automatically loaded.
@@ -30,14 +32,15 @@ function Assert-Hash([string]$Path, [string]$Expected) {
     if ($null -ne $stream) { $stream.Dispose() }
     $algorithm.Dispose()
   }
-  if ($actual -ne $Expected) {
+  if (@($Expected) -notcontains $actual) {
     throw "Unsupported or damaged file: $Path. See README.md for supported versions."
   }
 }
 $StarCraft = (Resolve-Path -LiteralPath $StarCraft).Path
 $Pluto = (Resolve-Path -LiteralPath $Pluto).Path
 Assert-Hash $StarCraft '32dbbdd001dd381cb1b3a719b7ad1fc918a9d4bc99661c675e00254efecca827'
-Assert-Hash $Pluto '7e360b643c8c0156c03fe0cad9972a3058138ccfe22f921c5b4e0cd0aaf0abef'
+# Original CoG 2026 DLL, or the same DLL with the launcher's 4-byte no-resign patch.
+Assert-Hash $Pluto @('7e360b643c8c0156c03fe0cad9972a3058138ccfe22f921c5b4e0cd0aaf0abef','ed19fff2ff212fcbf8e7b286aebb825754ce8d747cda45e03a75d70f146e0224')
 $modelDirectory = Join-Path (Split-Path $Pluto -Parent) 'pluto'
 Assert-Hash (Join-Path $modelDirectory 'pluto_infer.exe') 'ad880d8be52a6ef03893fa20644b6627e04fcd55e030178c6d52486b82340f2b'
 Assert-Hash (Join-Path $modelDirectory 'pluto_weights.bin') '00b400eace6e4782202ebdcb3c30db76054aaa6a08c6a7dcb59575abc2d0a26e'
@@ -56,7 +59,7 @@ if ($previousLogs) {
   foreach ($path in $previousLogs) { Move-Item -LiteralPath $path -Destination $archive }
 }
 Copy-Item -LiteralPath (Join-Path $bin 'pluto-scr.dll') -Destination $runtime -Force
-@('[pluto]',"module=$Pluto","speed_ms=$SpeedMs","multiplayer=$([int]$Multiplayer.IsPresent)","challenge=$([int]$Challenge.IsPresent)","allies=$([int]$Allies.IsPresent)","ally_view=$AllyView","team_stats=$([int]$TeamStats.IsPresent)") | Set-Content -LiteralPath (Join-Path $runtime 'bridge.ini') -Encoding Unicode
+@('[pluto]',"module=$Pluto","speed_ms=$SpeedMs","multiplayer=$([int]$Multiplayer.IsPresent)","challenge=$([int]$Challenge.IsPresent)","allies=$([int]$Allies.IsPresent)","ally_view=$AllyView","team_stats=$TeamStats","revive=$([int]$Revive.IsPresent)") | Set-Content -LiteralPath (Join-Path $runtime 'bridge.ini') -Encoding Unicode
 $previousDraw = $env:BWRL_DRAW
 $previousStraddle = $env:BWRL_STRADDLE
 $previousBudget = $env:BWRL_FRAME_BUDGET_MS
@@ -97,7 +100,7 @@ try {
       'stasis' { Write-Output 'Allied units are shown to Pluto as its own forces held in stasis; orders for them are dropped.' }
       default  { Write-Output 'Allied units are shown to Pluto as its own forces; orders for them are dropped.' }
     }
-    if ($TeamStats) { Write-Output 'Team strength experiment: unit counts and kills Pluto reads include its allies.' }
+    if ($TeamStats -ne 'off') { Write-Output "Team strength experiment ($TeamStats): statistics Pluto reads include its allies'." }
     Write-Output 'The original 1v1 model is used; match quality is unverified.'
   } elseif ($Challenge) {
     Write-Output "Experimental 1-v-many bridge ready in StarCraft process $($game.Id). Choose Melee, Free For All or Top vs Bottom."

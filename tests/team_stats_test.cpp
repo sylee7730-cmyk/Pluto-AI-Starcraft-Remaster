@@ -39,5 +39,37 @@ int main(){
   std::vector<uint8_t> bad=before;aggregate_team_stats(bad.data(),9,allies);require(bad==before);
   // Repeated application keeps adding (caller must apply once per fresh copy).
   aggregate_team_stats(g.data(),0,allies);require(at(g,Game::all_units_count,marine,0)==110);
-  std::puts("team stats aggregation: counts and kills summed for allies only, resources/supplies/deaths untouched");
+
+  // Mode "army": combat units and kills only; bases, workers, larvae and child units stay Pluto's own.
+  const unsigned command_center=106,drone=41,larva=35,interceptor=73,siege_tank=5,zealot=65;
+  std::vector<uint8_t> a(Game::size,0);
+  set(a,Game::all_units_count,marine,0,20);set(a,Game::all_units_count,marine,1,40);
+  set(a,Game::all_units_count,command_center,0,1);set(a,Game::all_units_count,command_center,1,3);
+  set(a,Game::all_units_count,drone,2,30);set(a,Game::all_units_count,larva,2,9);set(a,Game::all_units_count,interceptor,1,16);
+  set(a,Game::completed_units_count,siege_tank,1,6);set(a,Game::completed_units_count,zealot,2,8);
+  set(a,Game::unit_kills,zergling,1,30);set(a,Game::unit_kills,zergling,0,5);
+  std::vector<uint8_t> a_before=a;
+  aggregate_team_stats(a.data(),0,allies,TeamStatsMode::army);
+  require(at(a,Game::all_units_count,marine,0)==60);                                          // combat unit added
+  require(at(a,Game::all_units_count,command_center,0)==1);                                   // ally bases not added
+  require(at(a,Game::all_units_count,drone,0)==0 && at(a,Game::all_units_count,larva,0)==0);  // workers/larvae not added
+  require(at(a,Game::all_units_count,interceptor,0)==0);                                      // child units not added
+  require(at(a,Game::completed_units_count,siege_tank,0)==6 && at(a,Game::completed_units_count,zealot,0)==8);
+  require(at(a,Game::unit_kills,zergling,0)==35);                                             // kills always added
+  // Mode "kills": only the kill table changes.
+  std::vector<uint8_t> k=a_before;aggregate_team_stats(k.data(),0,allies,TeamStatsMode::kills);
+  require(at(k,Game::unit_kills,zergling,0)==35 && at(k,Game::all_units_count,marine,0)==20 && at(k,Game::completed_units_count,siege_tank,0)==0);
+  // Mode "off": untouched. Mode "all": everything.
+  std::vector<uint8_t> o=a_before;aggregate_team_stats(o.data(),0,allies,TeamStatsMode::off);require(o==a_before);
+  std::vector<uint8_t> all=a_before;aggregate_team_stats(all.data(),0,allies,TeamStatsMode::all);
+  require(at(all,Game::all_units_count,command_center,0)==4 && at(all,Game::all_units_count,drone,0)==30);
+  // Classification spot checks.
+  require(team_stats_counts_as_army(0) && team_stats_counts_as_army(5) && team_stats_counts_as_army(37) && team_stats_counts_as_army(65) && team_stats_counts_as_army(105));
+  require(!team_stats_counts_as_army(7) && !team_stats_counts_as_army(41) && !team_stats_counts_as_army(64));
+  require(!team_stats_counts_as_army(106) && !team_stats_counts_as_army(154) && !team_stats_counts_as_army(227));
+  require(!team_stats_counts_as_army(13) && !team_stats_counts_as_army(36) && !team_stats_counts_as_army(97));
+  require(parse_team_stats_mode(L"army")==TeamStatsMode::army && parse_team_stats_mode(L"kills")==TeamStatsMode::kills);
+  require(parse_team_stats_mode(L"all")==TeamStatsMode::all && parse_team_stats_mode(L"off")==TeamStatsMode::off);
+  require(parse_team_stats_mode(L"1")==TeamStatsMode::army && parse_team_stats_mode(L"0")==TeamStatsMode::off && parse_team_stats_mode(nullptr)==TeamStatsMode::off);
+  std::puts("team stats aggregation: all/army/kills/off modes, classification, resources/supplies/deaths untouched");
 }

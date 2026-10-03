@@ -54,7 +54,7 @@ bool Snapshot::update(bool first) {
   const AllyMask ally_mask=(hide_allies || ally_as_own)?make_ally_mask(read_session(g)):AllyMask{};
   const AllyMask allies=hide_allies?ally_mask:AllyMask{};
   remap_owners=ally_as_own?ally_mask:AllyMask{};
-  team_allies=team_stats?make_ally_mask(read_session(g)):AllyMask{};
+  team_allies=team_stats!=TeamStatsMode::off?make_ally_mask(read_session(g)):AllyMask{};
   data->eventCount=data->eventStringCount=0;
   data->self=self; data->neutral=11; data->enemy=-1;
   data->client_version=BWAPI::CLIENT_VERSION;
@@ -163,9 +163,11 @@ void Snapshot::update_players(uint32_t g) {
       p.deadUnitCount[type]=read<uint32_t>(g+G::deaths+(type*12+i)*4);
       p.killedUnitCount[type]=read<uint32_t>(g+G::unit_kills+(type*12+i)*4);
       for(unsigned ally=0;ally<8;++ally) if(team_allies.hides(ally)) {  // Team strength experiment.
-        p.allUnitCount[type]+=read<uint32_t>(g+G::all_units_count+(type*12+ally)*4);
-        p.completedUnitCount[type]+=read<uint32_t>(g+G::completed_units_count+(type*12+ally)*4);
-        p.killedUnitCount[type]+=read<uint32_t>(g+G::unit_kills+(type*12+ally)*4);
+        if(team_stats_adds_count(team_stats,type)) {
+          p.allUnitCount[type]+=read<uint32_t>(g+G::all_units_count+(type*12+ally)*4);
+          p.completedUnitCount[type]+=read<uint32_t>(g+G::completed_units_count+(type*12+ally)*4);
+        }
+        if(team_stats_adds_kills(team_stats))p.killedUnitCount[type]+=read<uint32_t>(g+G::unit_kills+(type*12+ally)*4);
       }
       p.visibleUnitCount[type]=p.allUnitCount[type];
       p.isUnitAvailable[type]=read<uint8_t>(g+G::unit_availability+i*228+type)!=0;

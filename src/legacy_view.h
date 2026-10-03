@@ -8,6 +8,7 @@
 #include <string>
 #include "commands.h"
 #include "session.h"
+#include "team_stats.h"
 
 // Compatibility view for the pinned Pluto binary's direct 1.16.1 memory reads.
 // The bot writes only to this view; commands are collected for SCR translation.
@@ -16,7 +17,7 @@ public:
   bool hide_allies=false;  // Allied play: Pluto's unit lists omit its allies' units.
   bool ally_as_own=false;  // Allied play: allies' units appear as Pluto's own.
   bool ally_stasis=false;  // With ally_as_own: present those units as held in stasis (uncontrollable).
-  bool team_stats=false;   // Allied play: Pluto's per-type unit counts and kills include its allies'.
+  TeamStatsMode team_stats=TeamStatsMode::off;  // Allied play: Pluto's statistics include (part of) its allies'.
   LegacyView();
   void update();
   void bind(HMODULE pluto);
