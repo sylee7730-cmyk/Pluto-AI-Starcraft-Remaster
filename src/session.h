@@ -33,9 +33,16 @@ inline AllyMask make_ally_mask(const Session& s) {
   for(unsigned i=0;i<8;++i)mask.hidden[i]=session_is_local_ally(s,i);
   return mask;
 }
-inline const char* session_rejection(const Session& s,bool allow_multiplayer,bool challenge=false,bool allow_allies=false) {
+inline const char* session_rejection(const Session& s,bool allow_multiplayer,bool challenge=false,bool allow_allies=false,bool any_game=false) {
   if(s.replay)return "replay";
   if(s.self>=8)return "local_observer";
+  if(any_game) {
+    // "Play anyway": the selected mode only sets defaults. Only what Pluto cannot play at all
+    // is refused: a slot it cannot control, or nobody to play against.
+    if(s.players[s.self]!=2)return "local_slot_not_player";
+    unsigned participants=0;for(auto type:s.players)participants+=session_participant(type);
+    return participants<2?"requires_opponent":nullptr;
+  }
   if(s.game_type!=2 && !(challenge && (s.game_type==3 || s.game_type==15)))return "unsupported_game_type";
   if(s.players[s.self]!=2)return "local_slot_not_player";
   unsigned participants=0,computers=0;
@@ -51,8 +58,8 @@ inline const char* session_rejection(const Session& s,bool allow_multiplayer,boo
   if(computers!=(challenge?participants-1:1))return challenge?"offline_requires_computers":"offline_requires_one_computer";
   return nullptr;
 }
-inline bool supported_session(const Session& s,bool allow_multiplayer,bool challenge=false,bool allow_allies=false) {
-  return session_rejection(s,allow_multiplayer,challenge,allow_allies)==nullptr;
+inline bool supported_session(const Session& s,bool allow_multiplayer,bool challenge=false,bool allow_allies=false,bool any_game=false) {
+  return session_rejection(s,allow_multiplayer,challenge,allow_allies,any_game)==nullptr;
 }
 inline const char* session_game_type(uint16_t type) {
   switch(type) {

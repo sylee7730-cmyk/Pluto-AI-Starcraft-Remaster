@@ -106,6 +106,18 @@ std::vector<std::string> session_messages_ko(const Session& session,std::string_
 
 // Pluto's win value runs from -1 (certain loss) to +1 (certain win); its own resign rule
 // fires at -0.95, which a 0..1 scale could never reach. Probability = (value + 1) / 2.
+std::string session_reason_ko(std::string_view reason) {
+  struct Entry { const char* key; const char* text; };
+  static const Entry table[]={
+    {"replay",u8"리플레이"},{"local_observer",u8"관전 중"},{"local_slot_not_player",u8"내 슬롯이 플레이어가 아님"},
+    {"unsupported_game_type",u8"게임 유형이 모드와 다름 (예: 팀 멜리)"},{"requires_two_players",u8"1대1이 아닌 구성"},
+    {"requires_opponent",u8"상대가 없음"},{"local_allies_not_supported",u8"플루토와 같은 편 플레이어가 있음"},
+    {"multiplayer_not_enabled",u8"온라인 게임인데 오프라인 모드로 실행"},{"requires_custom_game",u8"커스텀 게임이 아님"},
+    {"offline_requires_one_computer",u8"컴퓨터 상대가 1명이 아님"},{"offline_requires_computers",u8"컴퓨터 상대 구성이 모드와 다름"},
+  };
+  for(const auto& entry:table)if(reason==entry.key)return entry.text;
+  return u8"모드와 다른 구성";
+}
 double win_probability_percent(double value) {
   if(value<-1.0)value=-1.0;
   if(value>1.0)value=1.0;

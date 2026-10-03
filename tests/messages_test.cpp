@@ -80,6 +80,9 @@ int main() {
   require(pluto_overlay_text_ko("F1500 win=0.500")==u8"F1500 승률 75.0%","Win estimate changed");
   require(pluto_overlay_text_ko("F90 win=-0.500")==u8"F90 승률 25.0%","Negative win estimate must be accepted");
   require(pluto_overlay_text_ko("F0 win=n/a")==u8"F0 승률 계산 중","Unavailable win estimate misrepresented");
+  require(session_reason_ko("unsupported_game_type").find(u8"팀 멜리")!=std::string::npos,"Reason text for game type");
+  require(session_reason_ko("multiplayer_not_enabled").find(u8"온라인")!=std::string::npos,"Reason text for online");
+  require(!session_reason_ko("something_new").empty(),"Unknown reasons still get a text");
   require(win_percent_ko("0.5")=="75.0%" && win_percent_ko("1.0")=="100.0%" && win_percent_ko("0.0")=="50.0%","Percent formatting");
   require(win_percent_ko("-1.0")=="0.0%" && win_percent_ko("-0.95")=="2.5%" && win_percent_ko("-0.25")=="37.5%","Negative percent formatting");
   require(win_percent_ko("5.0")=="100.0%" && win_percent_ko("-5.0")=="0.0%","Percent clamping");

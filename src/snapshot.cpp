@@ -1,4 +1,5 @@
 #include "snapshot.h"
+LatencyInfo latency_info;
 #include "scr_profile_13515_x86.h"
 #include "scr_layout.h"
 #include "session.h"
@@ -68,9 +69,11 @@ bool Snapshot::update(bool first) {
   // Commands use the game's turn queue. Timing has to be measured before enabling bots.
   data->latencyFrames=2; data->remainingLatencyFrames=2; data->latencyTime=84;
   data->remainingLatencyTime=84; data->hasLatCom=false;
+  latency_info=LatencyInfo{};
   if(data->isMultiplayer) {
     const auto rate=read<uint32_t>(scr::addr(0x1240e58)+44);
-    const auto user_delay=std::min(read<uint32_t>(scr::addr(0x1241288)),2u);
+    const auto raw_user_delay=read<uint32_t>(scr::addr(0x1241288));
+    const auto user_delay=std::min(raw_user_delay,2u);
     const auto turns=2u+user_delay;
     // Native SCR's configured turn rate and user delay provide a latency
     // estimate. The command queue remains owned and paced by the game.
@@ -79,6 +82,7 @@ bool Snapshot::update(bool first) {
     data->latencyTime=static_cast<int>((1000u*turns+turn_rate-1)/turn_rate);
     data->remainingLatencyFrames=data->latencyFrames;
     data->remainingLatencyTime=data->latencyTime;
+    latency_info=LatencyInfo{true,rate,raw_user_delay,data->latencyFrames};
   }
   data->screenX=scr::screen_x(); data->screenY=scr::screen_y();
   update_players(g); update_map(g,first);

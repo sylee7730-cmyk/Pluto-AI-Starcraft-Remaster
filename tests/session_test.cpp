@@ -86,6 +86,27 @@ int main(){
   // Allies mask is empty when nobody is allied (default games behave as before).
   Session plain;plain.self=3;plain.players[3]=2;plain.players[6]=2;
   for(unsigned i=0;i<8;++i)require(!make_ally_mask(plain).hides(i));
+  // Play anyway: only an unplayable game is refused; the mode no longer matters.
+  {
+    Session team_melee;team_melee.multiplayer=true;team_melee.game_type=11;team_melee.self=0;
+    team_melee.players[0]=2;team_melee.players[1]=2;team_melee.players[2]=2;team_melee.players[3]=2;
+    team_melee.alliances[0][1]=1;team_melee.alliances[1][0]=1;
+    require(session_rejection(team_melee,false)!=nullptr);  // Normal 1v1 mode refuses it.
+    require(session_rejection(team_melee,true,true,true)!=nullptr);  // Team Melee is not an accepted type.
+    require(session_rejection(team_melee,false,false,false,true)==nullptr);  // Play anyway accepts it.
+    Session ums=team_melee;ums.game_type=10;require(session_rejection(ums,false,false,false,true)==nullptr);
+    Session one_v_one=team_melee;one_v_one.game_type=4;one_v_one.players[2]=0;one_v_one.players[3]=0;
+    require(session_rejection(one_v_one,false,false,false,true)==nullptr);
+    Session offline=team_melee;offline.multiplayer=false;offline.custom_singleplayer=false;
+    require(session_rejection(offline,false,false,false,true)==nullptr);
+    Session replay=team_melee;replay.replay=true;require(std::string(session_rejection(replay,true,true,true,true))=="replay");
+    Session observer=team_melee;observer.self=9;require(std::string(session_rejection(observer,true,true,true,true))=="local_observer");
+    Session not_player=team_melee;not_player.players[0]=1;
+    require(std::string(session_rejection(not_player,true,true,true,true))=="local_slot_not_player");
+    Session alone;alone.self=0;alone.game_type=2;alone.players[0]=2;
+    require(std::string(session_rejection(alone,true,true,true,true))=="requires_opponent");
+    require(supported_session(team_melee,false,false,false,true) && !supported_session(alone,true,true,true,true));
+  }
   std::puts("default 1v1 regressions and challenge 1v1..1v7, every slot, enemy teams, allied bot, UMS, shared-control teams, offline and multiplayer checks passed");
   std::puts("opt-in allied play: 3v3 admission, ally mask, one-way alliances, nonparticipants and unchanged restrictions passed");
 }

@@ -43,18 +43,9 @@ bool ally_stasis=false;          // With ally_as_own: present allied units as he
 TeamStatsMode team_stats=TeamStatsMode::off;  // Allied play: Pluto's statistics include (part of) its allies'.
 // Win-graph diagnostics: how often Pluto handed shapes to the bridge in this match.
 unsigned graph_frames=0,graph_shapes=0;
-// Revive experiment: when Pluto resigns (gg + leave), do not leave. Tear the bot
-// down and start it again as if a new match had begun, so it keeps playing the
-// current game. Pluto stops acting once it has decided to resign, so merely
-// blocking the departure is not enough. Capped so a hopeless game cannot freeze
-// the client over and over (each restart reloads the inference engine).
 // Shown in bridge.log ("version") and at the start of every match, so it is clear which build runs.
-constexpr char bridge_version[]="v12";
-bool revive_on_resign=false;
+constexpr char bridge_version[]="v14";
 bool pluto_noresign=false;        // The loaded pluto.dll carries the no-resign patch (never sends gg/leave).
-constexpr unsigned max_revives=10;
-unsigned revive_count=0;
-bool revive_requested=false,reviving=false;
 // Manual control: a hotkey toggles whether Pluto's commands reach the game. Pluto controls the
 // same player the human does and issues orders every 6 frames, so manual orders are otherwise
 // overwritten within a fraction of a second. RegisterHotKey runs on its own thread; the game
@@ -64,6 +55,9 @@ std::atomic<unsigned> pause_presses{0};
 std::atomic<bool> pause_hotkey_failed{false};
 unsigned pause_seen=0;
 bool manual_pause=false,pause_thread_started=false;
+bool any_game=false;  // bridge.ini any_game=1: play whatever game starts, regardless of the selected mode.
+bool mode_multiplayer=false,mode_challenge=false,mode_allies=false;  // The mode as selected, before any_game widens it.
+bool latency_reported=false;  // Once per match: the lobby's turn rate and user delay, shown on screen and logged.
 DWORD WINAPI pause_hotkey_thread(LPVOID) {
   if(!RegisterHotKey(nullptr,1,MOD_NOREPEAT,pause_vk)){pause_hotkey_failed=true;return 1;}
   MSG message;
@@ -154,6 +148,13 @@ void run_bot(bool first) {
     if(manual_pause)print_local({u8"플루토 일시정지: 지금부터 직접 조종할 수 있습니다.",key+u8" 키로 다시 플루토에게 맡깁니다."});
     else print_local({u8"플루토 재개: 다시 플루토가 조종합니다."});
   }
+  if(!latency_reported && latency_info.valid) {
+    latency_reported=true;
+    std::fprintf(log_file,"{\"stage\":\"latency\",\"turn_rate\":%u,\"user_delay\":%u,\"latency_frames\":%d,\"frame\":%d}\n",
+      latency_info.turn_rate,latency_info.user_delay,latency_info.frames,d.frameCount);
+    print_local({u8"현재 방 설정: 턴 레이트 "+std::to_string(latency_info.turn_rate)+u8", 지연 설정값 "+std::to_string(latency_info.user_delay)+
+      u8" → 명령 지연 "+std::to_string(latency_info.frames)+u8"프레임 (플루토 학습 기준 4프레임)"});
+  }
   legacy->hold_commands=manual_pause;
   legacy->update();
   legacy->begin_frame(log_file,d.frameCount);
@@ -185,11 +186,7 @@ void run_bot(bool first) {
     // The launcher's explicit speed policy takes priority over Pluto's onStart
     // request to uncap. A negative setting leaves the game's own speed intact.
     if(c.type==BWAPIC::CommandType::SetLocalSpeed)set_speed(speed_ms);
-    if(c.type==BWAPIC::CommandType::LeaveGame && revive_on_resign && revive_count<max_revives) {
-      revive_requested=true;  // Handled at the start of the next frame, see update_frame.
-      std::fprintf(log_file,"{\"stage\":\"resign_intercepted\",\"frame\":%d,\"revives_so_far\":%u}\n",d.frameCount,revive_count);
-    }
-    else if(c.type==BWAPIC::CommandType::LeaveGame) {
+    if(c.type==BWAPIC::CommandType::LeaveGame) {
       // Multiplayer departure must use the game's normal loop teardown. Do not
       // change simulation victory state locally, which peers would not observe.
       if(!scr::is_multiplayer())*reinterpret_cast<uint8_t*>(scr::game()+58896+d.self)=1;
@@ -220,23 +217,9 @@ void update_frame() {
     if(api_game)api_game->onMatchEnd();
     BWAPI::BroodwarPtr=nullptr;BWAPI::BWAPIClient.data=nullptr;
     api_game.reset();snapshot.reset();bot=nullptr;
-    last_frame=-1;match_ended=false;submitted_packets=0;manual_pause=false;
+    last_frame=-1;match_ended=false;submitted_packets=0;manual_pause=false;latency_reported=false;
   }
   if(match_ended)return;
-  if(revive_requested) {
-    // Restart Pluto in place: end the bot's match without leaving the game, drop
-    // its pending orders, and let the normal first-frame path start a fresh module.
-    revive_requested=false;++revive_count;
-    if(legacy)legacy->discard_pending_turns();
-    if(bot)bot->onEnd(false);
-    if(api_game)api_game->onMatchEnd();
-    BWAPI::BroodwarPtr=nullptr;BWAPI::BWAPIClient.data=nullptr;
-    api_game.reset();snapshot.reset();bot=nullptr;
-    clear_overlay();last_frame=-1;reviving=true;
-    print_local({u8"플루토가 기권하려 했지만 다시 깨웁니다 ("+std::to_string(revive_count)+u8"/"+std::to_string(max_revives)+u8"회).",
-      u8"새 경기처럼 다시 시작하므로 몇 초간 멈출 수 있습니다."});
-    std::fprintf(log_file,"{\"stage\":\"revive\",\"frame\":%d,\"count\":%u}\n",frame,revive_count);std::fflush(log_file);
-  }
   if(frame==last_frame)return;
   const auto session=read_session(g);
   if(last_frame>=0 && !allow_allies && session_has_local_ally(session)) {
@@ -249,7 +232,7 @@ void update_frame() {
     finish_match();return;
   }
   if(last_frame<0) {
-    if(const auto reason=session_rejection(session,allow_multiplayer,challenge_mode,allow_allies)) {
+    if(const auto reason=session_rejection(session,allow_multiplayer,challenge_mode,allow_allies,any_game)) {
       if(!unsupported_session_reported) {
         std::fprintf(log_file,"{\"stage\":\"session_skipped\",\"reason\":\"%s\",\"game_type\":%u,\"game_type_name\":\"%s\",\"self\":%u,\"multiplayer\":%s,\"multiplayer_enabled\":%s,\"player_types\":[",
           reason,session.game_type,session_game_type(session.game_type),session.self,
@@ -262,26 +245,32 @@ void update_frame() {
       return;
     }
     unsupported_session_reported=false;
-    if(!reviving)revive_count=0;  // A genuinely new match gets a fresh revive budget.
     std::fprintf(log_file,"{\"stage\":\"session_accepted\",\"multiplayer\":%s,\"self\":%u,\"game_type\":%u,\"participants\":%u,\"challenge\":%s}\n",
       session.multiplayer?"true":"false",session.self,session.game_type,session_participant_count(session),challenge_mode?"true":"false");
-    if(pluto_noresign && !reviving)print_local({u8"기권 코드 제거 패치가 적용된 Pluto입니다: 승률이 낮아도 gg를 치지 않고 끝까지 싸웁니다."});
-    if(!reviving)print_local({u8"플루토 팀전 브리지 "+std::string(bridge_version)});
-    if(pause_vk && !reviving)print_local({u8"직접 조종하려면: "+std::string(pause_vk==VK_SCROLL?"Scroll Lock":u8"설정한 단축키")+u8" 키로 플루토를 일시정지/재개합니다."});
-    if(revive_on_resign && !reviving)print_local({u8"기권 방지(실험): 플루토가 gg를 치면 나가지 않고 그 자리에서 다시 깨웁니다."});
-    if(reviving){reviving=false;goto session_notices_done;}
-    if(allow_allies && team_stats==TeamStatsMode::army)print_local({u8"팀 전력 합산(전투 유닛): 플루토가 읽는 전투 유닛 수·킬 수에 아군 것을 더합니다 (실험)."});
-    else if(allow_allies && team_stats==TeamStatsMode::kills)print_local({u8"팀 전력 합산(킬 수만): 플루토가 읽는 킬 수에 아군 것을 더합니다 (실험)."});
-    else if(allow_allies && team_stats==TeamStatsMode::all)print_local({u8"팀 전력 합산(전부): 플루토가 읽는 모든 유닛·건물 수와 킬 수에 아군 것을 더합니다 (실험)."});
-    if(allow_allies && ally_as_own && ally_stasis)print_local({u8"플루토 팀전 개발판: 아군 유닛을 플루토의 병력(행동 불가 상태)으로 인식합니다.",
+    if(any_game) {
+      if(const auto differs=session_rejection(session,mode_multiplayer,mode_challenge,mode_allies)) {
+        std::fprintf(log_file,"{\"stage\":\"session_forced\",\"reason\":\"%s\"}\n",differs);std::fflush(log_file);
+        print_local({u8"선택한 모드와 게임 구성이 달라도 플루토를 시작합니다.",u8"달랐던 점: "+session_reason_ko(differs)});
+      }
+    }
+    if(pluto_noresign)print_local({u8"기권 코드 제거 패치가 적용된 Pluto입니다: 승률이 낮아도 gg를 치지 않고 끝까지 싸웁니다."});
+    print_local({u8"플루토 팀전 브리지 "+std::string(bridge_version)});
+    if(pause_vk)print_local({u8"직접 조종하려면: "+std::string(pause_vk==VK_SCROLL?"Scroll Lock":u8"설정한 단축키")+u8" 키로 플루토를 일시정지/재개합니다."});
+    // Mode notices describe the selected mode, or a game that really has allies / several opponents.
+    // With "play anyway" the options are widened for every game, so a plain 1v1 stays quiet.
+    const bool show_ally_notices=allow_allies && (mode_allies || session_has_local_ally(session));
+    const bool show_many_notice=challenge_mode && (mode_challenge || session_participant_count(session)>2);
+    if(show_ally_notices && team_stats==TeamStatsMode::army)print_local({u8"팀 전력 합산(전투 유닛): 플루토가 읽는 전투 유닛 수·킬 수에 아군 것을 더합니다 (실험)."});
+    else if(show_ally_notices && team_stats==TeamStatsMode::kills)print_local({u8"팀 전력 합산(킬 수만): 플루토가 읽는 킬 수에 아군 것을 더합니다 (실험)."});
+    else if(show_ally_notices && team_stats==TeamStatsMode::all)print_local({u8"팀 전력 합산(전부): 플루토가 읽는 모든 유닛·건물 수와 킬 수에 아군 것을 더합니다 (실험)."});
+    if(show_ally_notices && ally_as_own && ally_stasis)print_local({u8"플루토 팀전 개발판: 아군 유닛을 플루토의 병력(행동 불가 상태)으로 인식합니다.",
       u8"아군에게는 명령이 전달되지 않습니다. 성능은 검증 전입니다."});
-    else if(allow_allies && ally_as_own)print_local({u8"플루토 팀전 개발판: 아군 유닛을 플루토의 병력으로 인식합니다.",
+    else if(show_ally_notices && ally_as_own)print_local({u8"플루토 팀전 개발판: 아군 유닛을 플루토의 병력으로 인식합니다.",
       u8"아군에게는 명령이 전달되지 않습니다. 성능은 검증 전입니다."});
-    else if(allow_allies)print_local({u8"플루토 팀전 개발판: 아군 유닛은 플루토에게 보이지 않습니다.",
+    else if(show_ally_notices)print_local({u8"플루토 팀전 개발판: 아군 유닛은 플루토에게 보이지 않습니다.",
       u8"플루토는 아군과 협력하지 못하고 혼자 판단합니다. 성능은 검증 전입니다."});
-    else if(challenge_mode)print_local({u8"플루토 콘텐츠 실험 모드: 1 대 "+std::to_string(session_participant_count(session)-1)+u8" 경기입니다.",
+    else if(show_many_notice)print_local({u8"플루토 콘텐츠 실험 모드: 1 대 "+std::to_string(session_participant_count(session)-1)+u8" 경기입니다.",
       u8"1대1 모델을 사용하므로 다인전 전투력과 승률 예측은 검증 전입니다."});
-    session_notices_done:;
   }
   if(!snapshot){snapshot=std::make_unique<Snapshot>();snapshot->hide_allies=allow_allies && !ally_as_own;snapshot->ally_as_own=ally_as_own;snapshot->ally_stasis=ally_stasis;snapshot->team_stats=allow_allies?team_stats:TeamStatsMode::off;}
   if(!snapshot->update(last_frame<0))return;
@@ -332,6 +321,11 @@ DWORD WINAPI initialize(void*) {
   challenge_mode=GetPrivateProfileIntW(L"pluto",L"challenge",0,(directory/L"bridge.ini").c_str())==1;
   // Allied play builds on the 1-vs-many admission rules, so it requires challenge mode.
   allow_allies=challenge_mode && GetPrivateProfileIntW(L"pluto",L"allies",0,(directory/L"bridge.ini").c_str())==1;
+  // Play anyway: the selected mode is only a default. Keep it for the "differs from your mode" notice,
+  // then accept online games, many-vs-many and allies whatever the mode was.
+  mode_multiplayer=allow_multiplayer;mode_challenge=challenge_mode;mode_allies=allow_allies;
+  any_game=GetPrivateProfileIntW(L"pluto",L"any_game",0,(directory/L"bridge.ini").c_str())==1;
+  if(any_game)allow_multiplayer=challenge_mode=allow_allies=true;
   // ally_view: own (default) | stasis | hide
   wchar_t ally_view[32]{};
   GetPrivateProfileStringW(L"pluto",L"ally_view",L"own",ally_view,32,(directory/L"bridge.ini").c_str());
@@ -340,15 +334,14 @@ DWORD WINAPI initialize(void*) {
   wchar_t team_stats_text[32]{};
   GetPrivateProfileStringW(L"pluto",L"team_stats",L"off",team_stats_text,32,(directory/L"bridge.ini").c_str());
   team_stats=allow_allies?parse_team_stats_mode(team_stats_text):TeamStatsMode::off;
-  revive_on_resign=GetPrivateProfileIntW(L"pluto",L"revive",0,(directory/L"bridge.ini").c_str())==1;
   pause_vk=GetPrivateProfileIntW(L"pluto",L"pause_key",VK_SCROLL,(directory/L"bridge.ini").c_str());
   if(pause_vk>255)pause_vk=0;
   if(speed_ms>1000)speed_ms=1000;
   log_file=_wfsopen((directory/"bridge.log").c_str(),L"w",_SH_DENYNO);
   if(!log_file)return 1;
-  std::fprintf(log_file,"{\"stage\":\"initializing\",\"version\":\"%s\",\"pid\":%lu,\"mode\":\"%s\",\"challenge\":%s,\"allies\":%s,\"ally_view\":\"%s\",\"team_stats\":\"%s\",\"revive\":%s}\n",bridge_version,GetCurrentProcessId(),
+  std::fprintf(log_file,"{\"stage\":\"initializing\",\"version\":\"%s\",\"pid\":%lu,\"mode\":\"%s\",\"challenge\":%s,\"allies\":%s,\"ally_view\":\"%s\",\"team_stats\":\"%s\",\"any_game\":%s}\n",bridge_version,GetCurrentProcessId(),
     allow_allies?"allies_experimental":(challenge_mode?"challenge_experimental":(allow_multiplayer?"multiplayer_experimental":"offline_pluto")),
-    challenge_mode?"true":"false",allow_allies?"true":"false",!allow_allies?"n/a":(!ally_as_own?"hide":(ally_stasis?"stasis":"own")),team_stats_mode_name(team_stats),revive_on_resign?"true":"false");std::fflush(log_file);
+    challenge_mode?"true":"false",allow_allies?"true":"false",!allow_allies?"n/a":(!ally_as_own?"hide":(ally_stasis?"stasis":"own")),team_stats_mode_name(team_stats),any_game?"true":"false");std::fflush(log_file);
   try {
     wchar_t executable[32768]{};GetModuleFileNameW(nullptr,executable,32768);
     if(file_sha256(executable)!=scr_sha256)throw std::runtime_error("Unsupported StarCraft executable SHA-256");

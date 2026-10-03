@@ -9,16 +9,16 @@ param(
   [switch]$Allies,
   [ValidateSet('own','stasis','hide')][string]$AllyView='own',
   [ValidateSet('off','army','kills','all')][string]$TeamStats='off',
-  [switch]$Revive,
+  [switch]$AnyGame,
   [ValidateRange(0,255)][int]$PauseKey=145,
   [switch]$VerifyOnly
 )
 $ErrorActionPreference = 'Stop'
-if ($TeamStats -ne 'off' -and -not $Allies) { throw '-TeamStats requires -Allies.' }
+if ($TeamStats -ne 'off' -and -not ($Allies -or $AnyGame)) { throw '-TeamStats requires -Allies.' }
 if ($Allies -and -not $Challenge) { throw '-Allies requires -Challenge (allied play builds on the 1-v-many admission rules).' }
 $projectRoot = Split-Path $PSScriptRoot -Parent
 $bin = Join-Path $projectRoot 'bin'
-if ($Revive) { Write-Output 'Revive experiment: when Pluto resigns it is restarted in place instead of leaving (up to 10 times per match).' }
+if ($AnyGame) { Write-Output 'Play-anyway mode: Pluto starts whatever game is created, even if it differs from the selected mode (replays, observing and games without an opponent excluded).' }
 $runtime = Join-Path $projectRoot $(if ($Allies) { 'runtime-allies' } elseif ($Challenge) { 'runtime-challenge' } elseif ($Multiplayer) { 'runtime-multiplayer' } else { 'runtime' })
 function Assert-Hash([string]$Path, [string[]]$Expected) {
   if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { throw "Missing file: $Path" }
@@ -60,7 +60,7 @@ if ($previousLogs) {
   foreach ($path in $previousLogs) { Move-Item -LiteralPath $path -Destination $archive }
 }
 Copy-Item -LiteralPath (Join-Path $bin 'pluto-scr.dll') -Destination $runtime -Force
-@('[pluto]',"module=$Pluto","speed_ms=$SpeedMs","multiplayer=$([int]$Multiplayer.IsPresent)","challenge=$([int]$Challenge.IsPresent)","allies=$([int]$Allies.IsPresent)","ally_view=$AllyView","team_stats=$TeamStats","revive=$([int]$Revive.IsPresent)","pause_key=$PauseKey") | Set-Content -LiteralPath (Join-Path $runtime 'bridge.ini') -Encoding Unicode
+@('[pluto]',"module=$Pluto","speed_ms=$SpeedMs","multiplayer=$([int]$Multiplayer.IsPresent)","challenge=$([int]$Challenge.IsPresent)","allies=$([int]$Allies.IsPresent)","ally_view=$AllyView","team_stats=$TeamStats","pause_key=$PauseKey","any_game=$([int]$AnyGame.IsPresent)") | Set-Content -LiteralPath (Join-Path $runtime 'bridge.ini') -Encoding Unicode
 $previousDraw = $env:BWRL_DRAW
 $previousStraddle = $env:BWRL_STRADDLE
 $previousBudget = $env:BWRL_FRAME_BUDGET_MS

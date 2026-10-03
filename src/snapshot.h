@@ -7,6 +7,11 @@
 #include "session.h"
 #include "team_stats.h"
 
+// The room's real settings as read from the game, and the latency Pluto is told about.
+// Set on every multiplayer snapshot; shown to the player so the lobby can be adjusted without guessing.
+struct LatencyInfo { bool valid = false; uint32_t turn_rate = 0; uint32_t user_delay = 0; int frames = 0; };
+extern LatencyInfo latency_info;
+
 // Work in progress: translates SCR's simulation state to BWAPI's client layout.
 class Snapshot {
 public:
