@@ -1,4 +1,5 @@
 #include <atomic>
+#include <chrono>
 #include <Windows.h>
 #include <MinHook.h>
 #include <BWAPI.h>
@@ -24,6 +25,7 @@ namespace {
 HMODULE bridge_module;
 FILE* log_file;
 DWORD (WINAPI* original_tick)();
+void (__cdecl* original_send)(const uint8_t*,size_t)=nullptr;
 std::unique_ptr<Snapshot> snapshot;
 std::unique_ptr<LegacyView> legacy;
 std::unique_ptr<BWAPI::GameImpl> api_game;
@@ -44,20 +46,42 @@ TeamStatsMode team_stats=TeamStatsMode::off;  // Allied play: Pluto's statistics
 // Win-graph diagnostics: how often Pluto handed shapes to the bridge in this match.
 unsigned graph_frames=0,graph_shapes=0;
 // Shown in bridge.log ("version") and at the start of every match, so it is clear which build runs.
-constexpr char bridge_version[]="v14";
+constexpr char bridge_version[]="v17";
 bool pluto_noresign=false;        // The loaded pluto.dll carries the no-resign patch (never sends gg/leave).
 // Manual control: a hotkey toggles whether Pluto's commands reach the game. Pluto controls the
 // same player the human does and issues orders every 6 frames, so manual orders are otherwise
 // overwritten within a fraction of a second. RegisterHotKey runs on its own thread; the game
 // thread notices the press count change and acts on it.
-UINT pause_vk=VK_SCROLL;  // bridge.ini pause_key=<virtual-key code>; 0 disables the hotkey.
+UINT pause_vk=VK_F9;  // bridge.ini pause_key=<virtual-key code>; 0 disables the hotkey.
 std::atomic<unsigned> pause_presses{0};
 std::atomic<bool> pause_hotkey_failed{false};
 unsigned pause_seen=0;
 bool manual_pause=false,pause_thread_started=false;
 bool any_game=false;  // bridge.ini any_game=1: play whatever game starts, regardless of the selected mode.
 bool mode_multiplayer=false,mode_challenge=false,mode_allies=false;  // The mode as selected, before any_game widens it.
-bool latency_reported=false;  // Once per match: the lobby's turn rate and user delay, shown on screen and logged.
+// Frame timing, logged every 240 frames while a match runs: gap = time between two game frames as
+// the bridge sees them, bot = time spent inside Pluto's onFrame. Separates a slow game from slow
+// command execution, and shows whether pausing Pluto changes either.
+struct FrameStats {
+  std::chrono::steady_clock::time_point last{};bool have_last=false;
+  double gap_sum=0,gap_max=0,bot_sum=0,bot_max=0;unsigned count=0;
+};
+FrameStats frame_stats;
+bool latency_reported=false;
+// Manual-control lock (bridge.ini manual_lock_seconds, 0 = off): units the human orders are withheld
+// from Pluto. It needs a hook on the game's own command queue to tell the human's packets from Pluto's.
+int manual_lock_seconds=20;
+bool manual_lock_hooked=false,manual_lock_announced=false;
+// Online, Pluto's commands are sent the moment it issues them. The one-frame hold is calibrated for offline play
+// (see LegacyView::drain); online the room's own delay is added on top, which pushes the delay Pluto measures from
+// its trained 4 frames to 5. bridge.ini latency_hold_online=1 restores the hold.
+bool latency_hold_online=false;  // Once per match: the lobby's turn rate and user delay, shown on screen and logged.
+// Name shown to the player for the pause hotkey.
+std::string pause_key_name() {
+  if(pause_vk>=VK_F1 && pause_vk<=VK_F12)return "F"+std::to_string(pause_vk-VK_F1+1);
+  if(pause_vk==VK_SCROLL)return "Scroll Lock";
+  return u8"설정한 단축키";
+}
 DWORD WINAPI pause_hotkey_thread(LPVOID) {
   if(!RegisterHotKey(nullptr,1,MOD_NOREPEAT,pause_vk)){pause_hotkey_failed=true;return 1;}
   MSG message;
@@ -120,7 +144,7 @@ void load_bot() {
     std::fprintf(log_file,"{\"stage\":\"pluto_dll\",\"variant\":\"%s\"}\n",pluto_noresign?"no_resign_patch":"original");
     bot_module=LoadLibraryExW(bot_path,nullptr,LOAD_WITH_ALTERED_SEARCH_PATH);
     if(!bot_module)throw std::runtime_error("Cannot load configured Pluto DLL");
-    legacy=std::make_unique<LegacyView>();legacy->hide_allies=allow_allies && !ally_as_own;legacy->ally_as_own=ally_as_own;legacy->ally_stasis=ally_stasis;legacy->team_stats=allow_allies?team_stats:TeamStatsMode::off;legacy->update();legacy->bind(bot_module);
+    legacy=std::make_unique<LegacyView>();legacy->configure_manual_lock(manual_lock_hooked && manual_lock_seconds>0,manual_lock_seconds*24);legacy->hide_allies=allow_allies && !ally_as_own;legacy->ally_as_own=ally_as_own;legacy->ally_stasis=ally_stasis;legacy->team_stats=allow_allies?team_stats:TeamStatsMode::off;legacy->update();legacy->bind(bot_module);
   }else{legacy->reset();legacy->update();}
   const auto init=reinterpret_cast<void (__cdecl*)(BWAPI::Game*)>(GetProcAddress(bot_module,"gameInit"));
   const auto create=reinterpret_cast<BWAPI::AIModule* (__cdecl*)()>(GetProcAddress(bot_module,"newAIModule"));
@@ -144,7 +168,7 @@ void run_bot(bool first) {
     if((presses-pause_seen)%2==1)manual_pause=!manual_pause;  // Two quick presses cancel out.
     pause_seen=presses;
     std::fprintf(log_file,"{\"stage\":\"manual_pause\",\"on\":%s,\"frame\":%d}\n",manual_pause?"true":"false",d.frameCount);
-    const std::string key=pause_vk==VK_SCROLL?"Scroll Lock":u8"설정한 단축키";
+    const std::string key=pause_key_name();
     if(manual_pause)print_local({u8"플루토 일시정지: 지금부터 직접 조종할 수 있습니다.",key+u8" 키로 다시 플루토에게 맡깁니다."});
     else print_local({u8"플루토 재개: 다시 플루토가 조종합니다."});
   }
@@ -153,7 +177,7 @@ void run_bot(bool first) {
     std::fprintf(log_file,"{\"stage\":\"latency\",\"turn_rate\":%u,\"user_delay\":%u,\"latency_frames\":%d,\"frame\":%d}\n",
       latency_info.turn_rate,latency_info.user_delay,latency_info.frames,d.frameCount);
     print_local({u8"현재 방 설정: 턴 레이트 "+std::to_string(latency_info.turn_rate)+u8", 지연 설정값 "+std::to_string(latency_info.user_delay)+
-      u8" → 명령 지연 "+std::to_string(latency_info.frames)+u8"프레임 (플루토 학습 기준 4프레임)"});
+      u8" → 추정 지연 "+std::to_string(latency_info.frames)+u8"프레임 (플루토 학습 기준 4프레임, 플루토가 실제로 잰 값은 따로 경고로 알려줍니다)"});
   }
   legacy->hold_commands=manual_pause;
   legacy->update();
@@ -173,7 +197,32 @@ void run_bot(bool first) {
       default:break;
     }
   }
+  const auto lock_report=legacy->manual_lock_report();
+  if(manual_lock_hooked && !manual_lock_announced && lock_report.locks_created>0) {
+    manual_lock_announced=true;
+    print_local({u8"수동 조종 감지: 내가 명령한 유닛은 일이 끝날 때까지 플루토가 건드리지 않습니다."});
+  }
+  const auto bot_started=std::chrono::steady_clock::now();
   bot->onFrame();
+  {
+    const auto bot_finished=std::chrono::steady_clock::now();
+    using Millis=std::chrono::duration<double,std::milli>;
+    const double bot_ms=Millis(bot_finished-bot_started).count();
+    frame_stats.bot_sum+=bot_ms;frame_stats.bot_max=std::max(frame_stats.bot_max,bot_ms);
+    if(frame_stats.have_last) {
+      const double gap_ms=Millis(bot_started-frame_stats.last).count();
+      frame_stats.gap_sum+=gap_ms;frame_stats.gap_max=std::max(frame_stats.gap_max,gap_ms);
+    }
+    frame_stats.last=bot_started;frame_stats.have_last=true;
+    if(++frame_stats.count>=240) {
+      std::fprintf(log_file,"{\"stage\":\"frame_stats\",\"frame\":%d,\"paused\":%s,\"gap_avg_ms\":%.1f,\"gap_max_ms\":%.1f,\"bot_avg_ms\":%.1f,\"bot_max_ms\":%.1f,\"human_packets\":%u,\"human_orders\":%u,\"locks_created\":%u,\"locked_now\":%u,\"trimmed\":%u}\n",
+        d.frameCount,manual_pause?"true":"false",frame_stats.gap_sum/frame_stats.count,frame_stats.gap_max,
+        frame_stats.bot_sum/frame_stats.count,frame_stats.bot_max,
+        lock_report.packets,lock_report.orders,lock_report.locks_created,lock_report.locked_now,lock_report.units_trimmed);
+      std::fflush(log_file);
+      frame_stats=FrameStats{};
+    }
+  }
   submitted_packets+=legacy->drain(log_file,d.frameCount);
   for(int i=0;i<d.commandCount;++i) {
     auto& c=d.commands[i];
@@ -217,7 +266,7 @@ void update_frame() {
     if(api_game)api_game->onMatchEnd();
     BWAPI::BroodwarPtr=nullptr;BWAPI::BWAPIClient.data=nullptr;
     api_game.reset();snapshot.reset();bot=nullptr;
-    last_frame=-1;match_ended=false;submitted_packets=0;manual_pause=false;latency_reported=false;
+    last_frame=-1;match_ended=false;submitted_packets=0;manual_pause=false;latency_reported=false;frame_stats=FrameStats{};manual_lock_announced=false;
   }
   if(match_ended)return;
   if(frame==last_frame)return;
@@ -247,6 +296,10 @@ void update_frame() {
     unsupported_session_reported=false;
     std::fprintf(log_file,"{\"stage\":\"session_accepted\",\"multiplayer\":%s,\"self\":%u,\"game_type\":%u,\"participants\":%u,\"challenge\":%s}\n",
       session.multiplayer?"true":"false",session.self,session.game_type,session_participant_count(session),challenge_mode?"true":"false");
+    // The one-frame hold stays offline (calibrated there); online it is dropped unless bridge.ini asks for it.
+    legacy->hold_one_frame=!session.multiplayer || latency_hold_online;
+    std::fprintf(log_file,"{\"stage\":\"command_hold\",\"online\":%s,\"hold_one_frame\":%s}\n",
+      session.multiplayer?"true":"false",legacy->hold_one_frame?"true":"false");
     if(any_game) {
       if(const auto differs=session_rejection(session,mode_multiplayer,mode_challenge,mode_allies)) {
         std::fprintf(log_file,"{\"stage\":\"session_forced\",\"reason\":\"%s\"}\n",differs);std::fflush(log_file);
@@ -255,7 +308,11 @@ void update_frame() {
     }
     if(pluto_noresign)print_local({u8"기권 코드 제거 패치가 적용된 Pluto입니다: 승률이 낮아도 gg를 치지 않고 끝까지 싸웁니다."});
     print_local({u8"플루토 팀전 브리지 "+std::string(bridge_version)});
-    if(pause_vk)print_local({u8"직접 조종하려면: "+std::string(pause_vk==VK_SCROLL?"Scroll Lock":u8"설정한 단축키")+u8" 키로 플루토를 일시정지/재개합니다."});
+    if(manual_lock_seconds>0) {
+      if(manual_lock_hooked)print_local({u8"수동 명령 유닛 잠금 켜짐: 내가 명령한 유닛은 일이 끝날 때까지(최대 "+std::to_string(manual_lock_seconds)+u8"초) 플루토가 건드리지 않습니다."});
+      else print_local({u8"수동 명령 유닛 잠금을 켜지 못했습니다 (게임 명령 훅 설치 실패). bridge.log 의 manual_lock_hook 줄을 확인하세요."});
+    }
+    if(pause_vk)print_local({u8"직접 조종하려면: "+pause_key_name()+u8" 키로 플루토를 일시정지/재개합니다."});
     // Mode notices describe the selected mode, or a game that really has allies / several opponents.
     // With "play anyway" the options are widened for every game, so a plain 1v1 stays quiet.
     const bool show_ally_notices=allow_allies && (mode_allies || session_has_local_ally(session));
@@ -300,6 +357,11 @@ void guarded_frame(bool frame) {
   __try {guarded_frame_cpp(frame);}
   __except(diagnose(GetExceptionInformation())){}
 }
+// Every command the game queues passes here; packets the bridge itself sends are told apart inside.
+void __cdecl send_hook(const uint8_t* data,size_t size) {
+  LegacyView::observe_human_packet(data,size);
+  original_send(data,size);
+}
 DWORD WINAPI tick_hook() {
   const auto caller=reinterpret_cast<uintptr_t>(_ReturnAddress());
   // Verified call sites in step_game_logic: before its first frame and after each
@@ -334,8 +396,10 @@ DWORD WINAPI initialize(void*) {
   wchar_t team_stats_text[32]{};
   GetPrivateProfileStringW(L"pluto",L"team_stats",L"off",team_stats_text,32,(directory/L"bridge.ini").c_str());
   team_stats=allow_allies?parse_team_stats_mode(team_stats_text):TeamStatsMode::off;
-  pause_vk=GetPrivateProfileIntW(L"pluto",L"pause_key",VK_SCROLL,(directory/L"bridge.ini").c_str());
+  pause_vk=GetPrivateProfileIntW(L"pluto",L"pause_key",VK_F9,(directory/L"bridge.ini").c_str());
   if(pause_vk>255)pause_vk=0;
+  latency_hold_online=GetPrivateProfileIntW(L"pluto",L"latency_hold_online",0,(directory/L"bridge.ini").c_str())==1;
+  manual_lock_seconds=std::clamp(static_cast<int>(GetPrivateProfileIntW(L"pluto",L"manual_lock_seconds",20,(directory/L"bridge.ini").c_str())),0,600);
   if(speed_ms>1000)speed_ms=1000;
   log_file=_wfsopen((directory/"bridge.log").c_str(),L"w",_SH_DENYNO);
   if(!log_file)return 1;
@@ -353,6 +417,14 @@ DWORD WINAPI initialize(void*) {
   if(result==MH_OK)result=MH_CreateHook(reinterpret_cast<void*>(expected),&tick_hook,reinterpret_cast<void**>(&original_tick));
   if(result==MH_OK)result=MH_EnableHook(reinterpret_cast<void*>(expected));
   std::fprintf(log_file,"{\"stage\":\"hook_install\",\"result\":\"%s\"}\n",MH_StatusToString(result));std::fflush(log_file);
+  if(result==MH_OK && manual_lock_seconds>0) {
+    // A failure here only turns the manual-control lock off; the bridge itself keeps working.
+    void* send_target=reinterpret_cast<void*>(scr::send_command());
+    auto hooked=MH_CreateHook(send_target,&send_hook,reinterpret_cast<void**>(&original_send));
+    if(hooked==MH_OK)hooked=MH_EnableHook(send_target);
+    manual_lock_hooked=hooked==MH_OK;
+    std::fprintf(log_file,"{\"stage\":\"manual_lock_hook\",\"result\":\"%s\",\"seconds\":%d}\n",MH_StatusToString(hooked),manual_lock_seconds);std::fflush(log_file);
+  }
   return result==MH_OK?0:3;
 }
 }
