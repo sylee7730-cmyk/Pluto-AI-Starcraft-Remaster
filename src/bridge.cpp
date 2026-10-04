@@ -46,7 +46,7 @@ TeamStatsMode team_stats=TeamStatsMode::off;  // Allied play: Pluto's statistics
 // Win-graph diagnostics: how often Pluto handed shapes to the bridge in this match.
 unsigned graph_frames=0,graph_shapes=0;
 // Shown in bridge.log ("version") and at the start of every match, so it is clear which build runs.
-constexpr char bridge_version[]="v17";
+constexpr char bridge_version[]="v18";
 bool pluto_noresign=false;        // The loaded pluto.dll carries the no-resign patch (never sends gg/leave).
 // Manual control: a hotkey toggles whether Pluto's commands reach the game. Pluto controls the
 // same player the human does and issues orders every 6 frames, so manual orders are otherwise
@@ -75,7 +75,10 @@ bool manual_lock_hooked=false,manual_lock_announced=false;
 // Online, Pluto's commands are sent the moment it issues them. The one-frame hold is calibrated for offline play
 // (see LegacyView::drain); online the room's own delay is added on top, which pushes the delay Pluto measures from
 // its trained 4 frames to 5. bridge.ini latency_hold_online=1 restores the hold.
-bool latency_hold_online=false;  // Once per match: the lobby's turn rate and user delay, shown on screen and logged.
+bool latency_hold_online=false;
+// Decided when a session is accepted, applied once load_bot() has created the LegacyView: the view
+// does not exist yet at that point on the first match, so it must not be touched there.
+bool match_hold_one_frame=true;  // Once per match: the lobby's turn rate and user delay, shown on screen and logged.
 // Name shown to the player for the pause hotkey.
 std::string pause_key_name() {
   if(pause_vk>=VK_F1 && pause_vk<=VK_F12)return "F"+std::to_string(pause_vk-VK_F1+1);
@@ -146,6 +149,7 @@ void load_bot() {
     if(!bot_module)throw std::runtime_error("Cannot load configured Pluto DLL");
     legacy=std::make_unique<LegacyView>();legacy->configure_manual_lock(manual_lock_hooked && manual_lock_seconds>0,manual_lock_seconds*24);legacy->hide_allies=allow_allies && !ally_as_own;legacy->ally_as_own=ally_as_own;legacy->ally_stasis=ally_stasis;legacy->team_stats=allow_allies?team_stats:TeamStatsMode::off;legacy->update();legacy->bind(bot_module);
   }else{legacy->reset();legacy->update();}
+  legacy->hold_one_frame=match_hold_one_frame;
   const auto init=reinterpret_cast<void (__cdecl*)(BWAPI::Game*)>(GetProcAddress(bot_module,"gameInit"));
   const auto create=reinterpret_cast<BWAPI::AIModule* (__cdecl*)()>(GetProcAddress(bot_module,"newAIModule"));
   if(!init || !create)throw std::runtime_error("Missing BWAPI exports");
@@ -297,9 +301,9 @@ void update_frame() {
     std::fprintf(log_file,"{\"stage\":\"session_accepted\",\"multiplayer\":%s,\"self\":%u,\"game_type\":%u,\"participants\":%u,\"challenge\":%s}\n",
       session.multiplayer?"true":"false",session.self,session.game_type,session_participant_count(session),challenge_mode?"true":"false");
     // The one-frame hold stays offline (calibrated there); online it is dropped unless bridge.ini asks for it.
-    legacy->hold_one_frame=!session.multiplayer || latency_hold_online;
+    match_hold_one_frame=!session.multiplayer || latency_hold_online;
     std::fprintf(log_file,"{\"stage\":\"command_hold\",\"online\":%s,\"hold_one_frame\":%s}\n",
-      session.multiplayer?"true":"false",legacy->hold_one_frame?"true":"false");
+      session.multiplayer?"true":"false",match_hold_one_frame?"true":"false");
     if(any_game) {
       if(const auto differs=session_rejection(session,mode_multiplayer,mode_challenge,mode_allies)) {
         std::fprintf(log_file,"{\"stage\":\"session_forced\",\"reason\":\"%s\"}\n",differs);std::fflush(log_file);
@@ -420,10 +424,25 @@ DWORD WINAPI initialize(void*) {
   if(result==MH_OK && manual_lock_seconds>0) {
     // A failure here only turns the manual-control lock off; the bridge itself keeps working.
     void* send_target=reinterpret_cast<void*>(scr::send_command());
-    auto hooked=MH_CreateHook(send_target,&send_hook,reinterpret_cast<void**>(&original_send));
-    if(hooked==MH_OK)hooked=MH_EnableHook(send_target);
+    const auto created=MH_CreateHook(send_target,&send_hook,reinterpret_cast<void**>(&original_send));
+    const auto hooked=created==MH_OK?MH_EnableHook(send_target):created;
     manual_lock_hooked=hooked==MH_OK;
-    std::fprintf(log_file,"{\"stage\":\"manual_lock_hook\",\"result\":\"%s\",\"seconds\":%d}\n",MH_StatusToString(hooked),manual_lock_seconds);std::fflush(log_file);
+    std::fprintf(log_file,"{\"stage\":\"manual_lock_hook\",\"result\":\"%s\",\"create\":\"%s\",\"seconds\":%d}\n",
+      MH_StatusToString(hooked),MH_StatusToString(created),manual_lock_seconds);
+    if(!manual_lock_hooked) {
+      // Why was the game's code page refused? Logged so the next step rests on facts, not guesses.
+      MEMORY_BASIC_INFORMATION page{};
+      if(VirtualQuery(send_target,&page,sizeof(page))) {
+        DWORD previous=0;
+        const BOOL writable=VirtualProtect(send_target,16,PAGE_EXECUTE_READWRITE,&previous);
+        const DWORD error=writable?0:GetLastError();
+        if(writable){DWORD ignored=0;VirtualProtect(send_target,16,previous,&ignored);}
+        std::fprintf(log_file,"{\"stage\":\"manual_lock_hook_diag\",\"target\":\"%p\",\"state\":%lu,\"protect\":%lu,\"alloc_protect\":%lu,\"type\":%lu,\"virtual_protect_ok\":%s,\"error\":%lu}\n",
+          send_target,static_cast<unsigned long>(page.State),static_cast<unsigned long>(page.Protect),static_cast<unsigned long>(page.AllocationProtect),
+          static_cast<unsigned long>(page.Type),writable?"true":"false",static_cast<unsigned long>(error));
+      }
+    }
+    std::fflush(log_file);
   }
   return result==MH_OK?0:3;
 }
