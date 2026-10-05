@@ -241,7 +241,7 @@ LegacyView::ManualLockReport LegacyView::manual_lock_report() {
   std::lock_guard<std::mutex> lock(manual_mutex);
   const auto& stats=manual_lock.stats;
   return {stats.packets,stats.selections,stats.orders,stats.hotkeys,stats.locks_created,stats.units_trimmed,
-    static_cast<unsigned>(manual_lock.locked_count())};
+    static_cast<unsigned>(manual_lock.locked_count()),bridge_packets_seen.load()};
 }
 // True when a Pluto-side handle names a unit the human is currently driving.
 bool LegacyView::is_manual_locked_handle(uint16_t id) {
@@ -262,9 +262,10 @@ UnitActivity LegacyView::activity_for_tag(uint32_t tag) const {
   return unit_activity(raw);
 }
 void LegacyView::observe_human_packet(const uint8_t* data,size_t size) noexcept {
-  if(sending_from_bridge || !data || !size)return;
+  if(!data || !size)return;
   LegacyView* view=active_view.load();
   if(!view || !view->manual_lock_enabled)return;
+  if(sending_from_bridge){++view->bridge_packets_seen;return;}  // Pluto's own packet: counted, never treated as the human's
   try {
     std::lock_guard<std::mutex> lock(view->manual_mutex);
     view->manual_lock.on_human_packet(data,size,view->frame_number);

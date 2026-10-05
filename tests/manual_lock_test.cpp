@@ -1,5 +1,6 @@
 #include "manual_lock.h"
 #include "commands.h"
+#include "debug_registers.h"
 #include <cstdio>
 #include <stdexcept>
 #include <vector>
@@ -139,6 +140,13 @@ int main() {
       require(!lock.locked(0x23456), "released");
       out = translate_commands(mixed.data(), mixed.size(), handles, &filter);
       require(out.size() == 2 && out[0][1] == 2 && !filter.selection_blocked, "after release Pluto selects both again");
+    }
+    { // Debug register helpers used by the hardware breakpoint that watches the game's command queue.
+      require(execute_breakpoint_dr7(0) == 0x1u, "DR7: only the DR0 enable bit for a fresh register");
+      require(execute_breakpoint_dr7(0x000F0000u) == 0x1u, "DR7: condition and length bits must select execute / 1 byte");
+      require(execute_breakpoint_dr7(0x000F0400u | 0x4u) == (0x400u | 0x4u | 0x1u), "DR7: other bits and other registers stay untouched");
+      require(execute_breakpoint_dr7(execute_breakpoint_dr7(0)) == 0x1u, "DR7: arming twice is the same as once");
+      require(breakpoint_zero_hit(0x1u) && breakpoint_zero_hit(0xFu) && !breakpoint_zero_hit(0x0u) && !breakpoint_zero_hit(0x4u), "DR6: only DR0 counts");
     }
     std::puts("manual lock: selection tracking, control groups, malformed packets, release rules and command-filter integration passed");
     return 0;

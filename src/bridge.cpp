@@ -7,6 +7,7 @@
 #include "scr_profile_13515_x86.h"
 #include "scr_layout.h"
 #include "snapshot.h"
+#include "command_watch.h"
 #include "legacy_view.h"
 #include "file_hash.h"
 #include "overlay.h"
@@ -25,7 +26,6 @@ namespace {
 HMODULE bridge_module;
 FILE* log_file;
 DWORD (WINAPI* original_tick)();
-void (__cdecl* original_send)(const uint8_t*,size_t)=nullptr;
 std::unique_ptr<Snapshot> snapshot;
 std::unique_ptr<LegacyView> legacy;
 std::unique_ptr<BWAPI::GameImpl> api_game;
@@ -46,7 +46,7 @@ TeamStatsMode team_stats=TeamStatsMode::off;  // Allied play: Pluto's statistics
 // Win-graph diagnostics: how often Pluto handed shapes to the bridge in this match.
 unsigned graph_frames=0,graph_shapes=0;
 // Shown in bridge.log ("version") and at the start of every match, so it is clear which build runs.
-constexpr char bridge_version[]="v18";
+constexpr char bridge_version[]="v19";
 bool pluto_noresign=false;        // The loaded pluto.dll carries the no-resign patch (never sends gg/leave).
 // Manual control: a hotkey toggles whether Pluto's commands reach the game. Pluto controls the
 // same player the human does and issues orders every 6 frames, so manual orders are otherwise
@@ -219,10 +219,10 @@ void run_bot(bool first) {
     }
     frame_stats.last=bot_started;frame_stats.have_last=true;
     if(++frame_stats.count>=240) {
-      std::fprintf(log_file,"{\"stage\":\"frame_stats\",\"frame\":%d,\"paused\":%s,\"gap_avg_ms\":%.1f,\"gap_max_ms\":%.1f,\"bot_avg_ms\":%.1f,\"bot_max_ms\":%.1f,\"human_packets\":%u,\"human_orders\":%u,\"locks_created\":%u,\"locked_now\":%u,\"trimmed\":%u}\n",
+      std::fprintf(log_file,"{\"stage\":\"frame_stats\",\"frame\":%d,\"paused\":%s,\"gap_avg_ms\":%.1f,\"gap_max_ms\":%.1f,\"bot_avg_ms\":%.1f,\"bot_max_ms\":%.1f,\"human_packets\":%u,\"human_orders\":%u,\"locks_created\":%u,\"locked_now\":%u,\"trimmed\":%u,\"bridge_seen\":%u}\n",
         d.frameCount,manual_pause?"true":"false",frame_stats.gap_sum/frame_stats.count,frame_stats.gap_max,
         frame_stats.bot_sum/frame_stats.count,frame_stats.bot_max,
-        lock_report.packets,lock_report.orders,lock_report.locks_created,lock_report.locked_now,lock_report.units_trimmed);
+        lock_report.packets,lock_report.orders,lock_report.locks_created,lock_report.locked_now,lock_report.units_trimmed,lock_report.bridge_seen);
       std::fflush(log_file);
       frame_stats=FrameStats{};
     }
@@ -314,7 +314,7 @@ void update_frame() {
     print_local({u8"플루토 팀전 브리지 "+std::string(bridge_version)});
     if(manual_lock_seconds>0) {
       if(manual_lock_hooked)print_local({u8"수동 명령 유닛 잠금 켜짐: 내가 명령한 유닛은 일이 끝날 때까지(최대 "+std::to_string(manual_lock_seconds)+u8"초) 플루토가 건드리지 않습니다."});
-      else print_local({u8"수동 명령 유닛 잠금을 켜지 못했습니다 (게임 명령 훅 설치 실패). bridge.log 의 manual_lock_hook 줄을 확인하세요."});
+      else print_local({u8"수동 명령 유닛 잠금을 켜지 못했습니다 (명령 감시 설치 실패). bridge.log 의 manual_lock_hook 줄을 확인하세요."});
     }
     if(pause_vk)print_local({u8"직접 조종하려면: "+pause_key_name()+u8" 키로 플루토를 일시정지/재개합니다."});
     // Mode notices describe the selected mode, or a game that really has allies / several opponents.
@@ -360,11 +360,6 @@ LONG diagnose(EXCEPTION_POINTERS* p) {
 void guarded_frame(bool frame) {
   __try {guarded_frame_cpp(frame);}
   __except(diagnose(GetExceptionInformation())){}
-}
-// Every command the game queues passes here; packets the bridge itself sends are told apart inside.
-void __cdecl send_hook(const uint8_t* data,size_t size) {
-  LegacyView::observe_human_packet(data,size);
-  original_send(data,size);
 }
 DWORD WINAPI tick_hook() {
   const auto caller=reinterpret_cast<uintptr_t>(_ReturnAddress());
@@ -422,27 +417,13 @@ DWORD WINAPI initialize(void*) {
   if(result==MH_OK)result=MH_EnableHook(reinterpret_cast<void*>(expected));
   std::fprintf(log_file,"{\"stage\":\"hook_install\",\"result\":\"%s\"}\n",MH_StatusToString(result));std::fflush(log_file);
   if(result==MH_OK && manual_lock_seconds>0) {
+    // The game's code pages are read-execute only, so an inline hook on its command queue is refused
+    // (VirtualProtect error 87 / MH_ERROR_MEMORY_PROTECT). A hardware execute breakpoint needs no write access.
     // A failure here only turns the manual-control lock off; the bridge itself keeps working.
-    void* send_target=reinterpret_cast<void*>(scr::send_command());
-    const auto created=MH_CreateHook(send_target,&send_hook,reinterpret_cast<void**>(&original_send));
-    const auto hooked=created==MH_OK?MH_EnableHook(send_target):created;
-    manual_lock_hooked=hooked==MH_OK;
-    std::fprintf(log_file,"{\"stage\":\"manual_lock_hook\",\"result\":\"%s\",\"create\":\"%s\",\"seconds\":%d}\n",
-      MH_StatusToString(hooked),MH_StatusToString(created),manual_lock_seconds);
-    if(!manual_lock_hooked) {
-      // Why was the game's code page refused? Logged so the next step rests on facts, not guesses.
-      MEMORY_BASIC_INFORMATION page{};
-      if(VirtualQuery(send_target,&page,sizeof(page))) {
-        DWORD previous=0;
-        const BOOL writable=VirtualProtect(send_target,16,PAGE_EXECUTE_READWRITE,&previous);
-        const DWORD error=writable?0:GetLastError();
-        if(writable){DWORD ignored=0;VirtualProtect(send_target,16,previous,&ignored);}
-        std::fprintf(log_file,"{\"stage\":\"manual_lock_hook_diag\",\"target\":\"%p\",\"state\":%lu,\"protect\":%lu,\"alloc_protect\":%lu,\"type\":%lu,\"virtual_protect_ok\":%s,\"error\":%lu}\n",
-          send_target,static_cast<unsigned long>(page.State),static_cast<unsigned long>(page.Protect),static_cast<unsigned long>(page.AllocationProtect),
-          static_cast<unsigned long>(page.Type),writable?"true":"false",static_cast<unsigned long>(error));
-      }
-    }
-    std::fflush(log_file);
+    const auto watch=command_watch::install(static_cast<uintptr_t>(scr::send_command()),&LegacyView::observe_human_packet);
+    manual_lock_hooked=watch.armed>0;
+    std::fprintf(log_file,"{\"stage\":\"manual_lock_hook\",\"method\":\"hardware_breakpoint\",\"armed_threads\":%u,\"failed_threads\":%u,\"handler_error\":%lu,\"seconds\":%d}\n",
+      watch.armed,watch.failed,watch.handler_error,manual_lock_seconds);std::fflush(log_file);
   }
   return result==MH_OK?0:3;
 }
