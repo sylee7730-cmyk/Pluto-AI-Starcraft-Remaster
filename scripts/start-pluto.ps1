@@ -11,7 +11,7 @@ param(
   [ValidateSet('off','army','kills','all')][string]$TeamStats='off',
   [switch]$AnyGame,
   [switch]$KeepOnlineHold,
-  [ValidateRange(0,600)][int]$ManualLockSeconds=20,
+  [ValidateRange(0,600)][int]$ManualLockSeconds=0,
   [ValidateRange(0,255)][int]$PauseKey=120,
   [switch]$VerifyOnly
 )

@@ -146,7 +146,25 @@ int main() {
       require(execute_breakpoint_dr7(0x000F0000u) == 0x1u, "DR7: condition and length bits must select execute / 1 byte");
       require(execute_breakpoint_dr7(0x000F0400u | 0x4u) == (0x400u | 0x4u | 0x1u), "DR7: other bits and other registers stay untouched");
       require(execute_breakpoint_dr7(execute_breakpoint_dr7(0)) == 0x1u, "DR7: arming twice is the same as once");
+      require(disable_breakpoint_dr7(0x1u | 0x4u) == 0x4u && disable_breakpoint_dr7(0) == 0, "DR7: disabling clears only DR0's enable bit");
       require(breakpoint_zero_hit(0x1u) && breakpoint_zero_hit(0xFu) && !breakpoint_zero_hit(0x0u) && !breakpoint_zero_hit(0x4u), "DR6: only DR0 counts");
+    }
+    { // Stepping over the breakpoint: resume flag and trap flag are set together, only the trap flag is removed afterwards.
+      const uint32_t flags = 0x246u;  // a typical EFLAGS value
+      require(begin_step_over(flags) == (flags | kResumeFlag | kTrapFlag), "step over: RF and TF are both set");
+      require(end_step_over(begin_step_over(flags)) == (flags | kResumeFlag), "step over: only TF is cleared afterwards");
+      require(end_step_over(flags) == flags, "step over: clearing TF leaves ordinary flags alone");
+      require(kTrapFlag == 0x100u && kResumeFlag == 0x10000u, "step over: documented bit positions");
+    }
+    { // Storm detection: normal command rates pass, a runaway breakpoint is caught within one interval.
+      StormGuard guard;                                         // 20000 hits per interval
+      unsigned long long total = 0;
+      for (int interval = 0; interval < 50; ++interval) { total += 40; require(!guard.storm(total), "a few hundred commands a second is no storm"); }
+      require(!guard.storm(total + 20000), "exactly at the limit is still fine");
+      total += 20000;
+      total += 1000000; require(guard.storm(total), "a million hits in one interval is a storm");
+      require(!guard.storm(total + 10), "the guard recovers once the rate drops again");
+      StormGuard strict(100); require(strict.storm(101) && !strict.storm(150), "limit is configurable");
     }
     std::puts("manual lock: selection tracking, control groups, malformed packets, release rules and command-filter integration passed");
     return 0;
