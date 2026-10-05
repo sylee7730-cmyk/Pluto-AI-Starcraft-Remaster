@@ -11,7 +11,6 @@ param(
   [ValidateSet('off','army','kills','all')][string]$TeamStats='off',
   [switch]$AnyGame,
   [switch]$KeepOnlineHold,
-  [ValidateRange(0,600)][int]$ManualLockSeconds=0,
   [ValidateRange(0,255)][int]$PauseKey=120,
   [switch]$VerifyOnly
 )
@@ -20,7 +19,6 @@ if ($TeamStats -ne 'off' -and -not ($Allies -or $AnyGame)) { throw '-TeamStats r
 if ($Allies -and -not $Challenge) { throw '-Allies requires -Challenge (allied play builds on the 1-v-many admission rules).' }
 $projectRoot = Split-Path $PSScriptRoot -Parent
 $bin = Join-Path $projectRoot 'bin'
-if ($ManualLockSeconds -gt 0) { Write-Output "Manual-control lock: units you order are withheld from Pluto until their work ends (at most $ManualLockSeconds s)." }
 if ($AnyGame) { Write-Output 'Play-anyway mode: Pluto starts whatever game is created, even if it differs from the selected mode (replays, observing and games without an opponent excluded).' }
 $runtime = Join-Path $projectRoot $(if ($Allies) { 'runtime-allies' } elseif ($Challenge) { 'runtime-challenge' } elseif ($Multiplayer) { 'runtime-multiplayer' } else { 'runtime' })
 function Assert-Hash([string]$Path, [string[]]$Expected) {
@@ -63,7 +61,7 @@ if ($previousLogs) {
   foreach ($path in $previousLogs) { Move-Item -LiteralPath $path -Destination $archive }
 }
 Copy-Item -LiteralPath (Join-Path $bin 'pluto-scr.dll') -Destination $runtime -Force
-@('[pluto]',"module=$Pluto","speed_ms=$SpeedMs","multiplayer=$([int]$Multiplayer.IsPresent)","challenge=$([int]$Challenge.IsPresent)","allies=$([int]$Allies.IsPresent)","ally_view=$AllyView","team_stats=$TeamStats","pause_key=$PauseKey","any_game=$([int]$AnyGame.IsPresent)","manual_lock_seconds=$ManualLockSeconds","latency_hold_online=$([int]$KeepOnlineHold.IsPresent)") | Set-Content -LiteralPath (Join-Path $runtime 'bridge.ini') -Encoding Unicode
+@('[pluto]',"module=$Pluto","speed_ms=$SpeedMs","multiplayer=$([int]$Multiplayer.IsPresent)","challenge=$([int]$Challenge.IsPresent)","allies=$([int]$Allies.IsPresent)","ally_view=$AllyView","team_stats=$TeamStats","pause_key=$PauseKey","any_game=$([int]$AnyGame.IsPresent)","latency_hold_online=$([int]$KeepOnlineHold.IsPresent)") | Set-Content -LiteralPath (Join-Path $runtime 'bridge.ini') -Encoding Unicode
 $previousDraw = $env:BWRL_DRAW
 $previousStraddle = $env:BWRL_STRADDLE
 $previousBudget = $env:BWRL_FRAME_BUDGET_MS

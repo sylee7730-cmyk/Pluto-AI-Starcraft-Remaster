@@ -1,5 +1,4 @@
 #include "snapshot.h"
-#include "manual_lock.h"
 LatencyInfo latency_info;
 #include "scr_profile_13515_x86.h"
 #include "scr_layout.h"
@@ -294,21 +293,4 @@ void Snapshot::update_unit(int id) {
   d.isAttacking=d.order==BWAPI::Orders::Enum::Attack1 || d.order==BWAPI::Orders::AttackUnit || d.order==BWAPI::Orders::Enum::TowerAttack;
   d.isStartingAttack=d.groundWeaponCooldown>old.groundWeaponCooldown || d.airWeaponCooldown>old.airWeaponCooldown;
   d.isAttackFrame=d.isStartingAttack; d.buttonset=word(U::buttons);
-}
-
-// For the manual-control lock: is this unit gone, still working on an order, or idle again?
-// Buildings count as idle: the human only orders them to set a rally point, which must not
-// keep Pluto away from a building that is busy training.
-UnitActivity unit_activity(uint32_t raw) {
-  const auto type_id=read<uint16_t>(raw+U::unit_id);
-  if(!read<uint32_t>(raw+12) || type_id>=228)return UnitActivity::gone;
-  const int order=read<uint8_t>(raw+U::order);
-  if(order==0 && read<uint8_t>(raw+U::order_state)==1)return UnitActivity::gone;
-  if(BWAPI::UnitType(type_id).isBuilding())return UnitActivity::idle;
-  const bool idle=order==BWAPI::Orders::PlayerGuard || order==BWAPI::Orders::Guard || order==BWAPI::Orders::Stop ||
-    order==BWAPI::Orders::PickupIdle || order==BWAPI::Orders::Nothing || order==BWAPI::Orders::Medic ||
-    order==BWAPI::Orders::Carrier || order==BWAPI::Orders::Reaver || order==BWAPI::Orders::Critter ||
-    order==BWAPI::Orders::Neutral || order==BWAPI::Orders::TowerGuard || order==BWAPI::Orders::Burrowed ||
-    order==BWAPI::Orders::NukeTrain || order==BWAPI::Orders::Larva;
-  return idle?UnitActivity::idle:UnitActivity::busy;
 }

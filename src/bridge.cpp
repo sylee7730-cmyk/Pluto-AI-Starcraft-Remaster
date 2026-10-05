@@ -7,7 +7,6 @@
 #include "scr_profile_13515_x86.h"
 #include "scr_layout.h"
 #include "snapshot.h"
-#include "command_watch.h"
 #include "legacy_view.h"
 #include "file_hash.h"
 #include "overlay.h"
@@ -46,7 +45,7 @@ TeamStatsMode team_stats=TeamStatsMode::off;  // Allied play: Pluto's statistics
 // Win-graph diagnostics: how often Pluto handed shapes to the bridge in this match.
 unsigned graph_frames=0,graph_shapes=0;
 // Shown in bridge.log ("version") and at the start of every match, so it is clear which build runs.
-constexpr char bridge_version[]="v20";
+constexpr char bridge_version[]="v21";
 bool pluto_noresign=false;        // The loaded pluto.dll carries the no-resign patch (never sends gg/leave).
 // Manual control: a hotkey toggles whether Pluto's commands reach the game. Pluto controls the
 // same player the human does and issues orders every 6 frames, so manual orders are otherwise
@@ -68,10 +67,6 @@ struct FrameStats {
 };
 FrameStats frame_stats;
 bool latency_reported=false;
-// Manual-control lock (bridge.ini manual_lock_seconds, 0 = off): units the human orders are withheld
-// from Pluto. It needs a hook on the game's own command queue to tell the human's packets from Pluto's.
-int manual_lock_seconds=0;
-bool manual_lock_hooked=false,manual_lock_announced=false,watch_storm_reported=false;
 // Online, Pluto's commands are sent the moment it issues them. The one-frame hold is calibrated for offline play
 // (see LegacyView::drain); online the room's own delay is added on top, which pushes the delay Pluto measures from
 // its trained 4 frames to 5. bridge.ini latency_hold_online=1 restores the hold.
@@ -147,7 +142,7 @@ void load_bot() {
     std::fprintf(log_file,"{\"stage\":\"pluto_dll\",\"variant\":\"%s\"}\n",pluto_noresign?"no_resign_patch":"original");
     bot_module=LoadLibraryExW(bot_path,nullptr,LOAD_WITH_ALTERED_SEARCH_PATH);
     if(!bot_module)throw std::runtime_error("Cannot load configured Pluto DLL");
-    legacy=std::make_unique<LegacyView>();legacy->configure_manual_lock(manual_lock_hooked && manual_lock_seconds>0,manual_lock_seconds*24);legacy->hide_allies=allow_allies && !ally_as_own;legacy->ally_as_own=ally_as_own;legacy->ally_stasis=ally_stasis;legacy->team_stats=allow_allies?team_stats:TeamStatsMode::off;legacy->update();legacy->bind(bot_module);
+    legacy=std::make_unique<LegacyView>();legacy->hide_allies=allow_allies && !ally_as_own;legacy->ally_as_own=ally_as_own;legacy->ally_stasis=ally_stasis;legacy->team_stats=allow_allies?team_stats:TeamStatsMode::off;legacy->update();legacy->bind(bot_module);
   }else{legacy->reset();legacy->update();}
   legacy->hold_one_frame=match_hold_one_frame;
   const auto init=reinterpret_cast<void (__cdecl*)(BWAPI::Game*)>(GetProcAddress(bot_module,"gameInit"));
@@ -201,27 +196,6 @@ void run_bot(bool first) {
       default:break;
     }
   }
-  const auto lock_report=legacy->manual_lock_report();
-  const auto watch_status=command_watch::status();
-  if(manual_lock_hooked) {
-    // The first frame a thread runs the bot of a started match: arm that thread (once). Only the threads that
-    // really run the game loop are armed, never every thread of the process.
-    thread_local bool watch_requested=false;
-    if(!watch_requested) {
-      watch_requested=true;
-      command_watch::watch_thread(GetCurrentThreadId());
-      std::fprintf(log_file,"{\"stage\":\"manual_lock_arm\",\"thread\":%lu,\"frame\":%d}\n",GetCurrentThreadId(),d.frameCount);std::fflush(log_file);
-    }
-    if(watch_status.stormed && !watch_storm_reported) {
-      watch_storm_reported=true;
-      std::fprintf(log_file,"{\"stage\":\"manual_lock_storm\",\"frame\":%d,\"hits\":%llu}\n",d.frameCount,watch_status.hits);std::fflush(log_file);
-      print_local({u8"수동 명령 감시가 폭주해서 자동으로 꺼졌습니다. 게임은 계속 진행됩니다. 내가 명령한 유닛 잠금은 이번 판에서 쓸 수 없습니다."});
-    }
-  }
-  if(manual_lock_hooked && !manual_lock_announced && lock_report.locks_created>0) {
-    manual_lock_announced=true;
-    print_local({u8"수동 조종 감지: 내가 명령한 유닛은 일이 끝날 때까지 플루토가 건드리지 않습니다."});
-  }
   const auto bot_started=std::chrono::steady_clock::now();
   bot->onFrame();
   {
@@ -235,10 +209,9 @@ void run_bot(bool first) {
     }
     frame_stats.last=bot_started;frame_stats.have_last=true;
     if(++frame_stats.count>=240) {
-      std::fprintf(log_file,"{\"stage\":\"frame_stats\",\"frame\":%d,\"paused\":%s,\"gap_avg_ms\":%.1f,\"gap_max_ms\":%.1f,\"bot_avg_ms\":%.1f,\"bot_max_ms\":%.1f,\"human_packets\":%u,\"human_orders\":%u,\"locks_created\":%u,\"locked_now\":%u,\"trimmed\":%u,\"bridge_seen\":%u,\"watch_hits\":%llu,\"watch_armed\":%u,\"watch_failed\":%u}\n",
+      std::fprintf(log_file,"{\"stage\":\"frame_stats\",\"frame\":%d,\"paused\":%s,\"gap_avg_ms\":%.1f,\"gap_max_ms\":%.1f,\"bot_avg_ms\":%.1f,\"bot_max_ms\":%.1f}\n",
         d.frameCount,manual_pause?"true":"false",frame_stats.gap_sum/frame_stats.count,frame_stats.gap_max,
-        frame_stats.bot_sum/frame_stats.count,frame_stats.bot_max,
-        lock_report.packets,lock_report.orders,lock_report.locks_created,lock_report.locked_now,lock_report.units_trimmed,lock_report.bridge_seen,watch_status.hits,watch_status.armed,watch_status.failed);
+        frame_stats.bot_sum/frame_stats.count,frame_stats.bot_max);
       std::fflush(log_file);
       frame_stats=FrameStats{};
     }
@@ -286,7 +259,7 @@ void update_frame() {
     if(api_game)api_game->onMatchEnd();
     BWAPI::BroodwarPtr=nullptr;BWAPI::BWAPIClient.data=nullptr;
     api_game.reset();snapshot.reset();bot=nullptr;
-    last_frame=-1;match_ended=false;submitted_packets=0;manual_pause=false;latency_reported=false;frame_stats=FrameStats{};manual_lock_announced=false;watch_storm_reported=false;
+    last_frame=-1;match_ended=false;submitted_packets=0;manual_pause=false;latency_reported=false;frame_stats=FrameStats{};
   }
   if(match_ended)return;
   if(frame==last_frame)return;
@@ -328,10 +301,6 @@ void update_frame() {
     }
     if(pluto_noresign)print_local({u8"기권 코드 제거 패치가 적용된 Pluto입니다: 승률이 낮아도 gg를 치지 않고 끝까지 싸웁니다."});
     print_local({u8"플루토 팀전 브리지 "+std::string(bridge_version)});
-    if(manual_lock_seconds>0) {
-      if(manual_lock_hooked)print_local({u8"수동 명령 유닛 잠금 켜짐(실험): 내가 명령한 유닛은 일이 끝날 때까지(최대 "+std::to_string(manual_lock_seconds)+u8"초) 플루토가 건드리지 않습니다."});
-      else print_local({u8"수동 명령 유닛 잠금을 켜지 못했습니다 (명령 감시 설치 실패). bridge.log 의 manual_lock_hook 줄을 확인하세요."});
-    }
     if(pause_vk)print_local({u8"직접 조종하려면: "+pause_key_name()+u8" 키로 플루토를 일시정지/재개합니다."});
     // Mode notices describe the selected mode, or a game that really has allies / several opponents.
     // With "play anyway" the options are widened for every game, so a plain 1v1 stays quiet.
@@ -414,7 +383,6 @@ DWORD WINAPI initialize(void*) {
   pause_vk=GetPrivateProfileIntW(L"pluto",L"pause_key",VK_F9,(directory/L"bridge.ini").c_str());
   if(pause_vk>255)pause_vk=0;
   latency_hold_online=GetPrivateProfileIntW(L"pluto",L"latency_hold_online",0,(directory/L"bridge.ini").c_str())==1;
-  manual_lock_seconds=std::clamp(static_cast<int>(GetPrivateProfileIntW(L"pluto",L"manual_lock_seconds",0,(directory/L"bridge.ini").c_str())),0,600);
   if(speed_ms>1000)speed_ms=1000;
   log_file=_wfsopen((directory/"bridge.log").c_str(),L"w",_SH_DENYNO);
   if(!log_file)return 1;
@@ -432,16 +400,6 @@ DWORD WINAPI initialize(void*) {
   if(result==MH_OK)result=MH_CreateHook(reinterpret_cast<void*>(expected),&tick_hook,reinterpret_cast<void**>(&original_tick));
   if(result==MH_OK)result=MH_EnableHook(reinterpret_cast<void*>(expected));
   std::fprintf(log_file,"{\"stage\":\"hook_install\",\"result\":\"%s\"}\n",MH_StatusToString(result));std::fflush(log_file);
-  if(result==MH_OK && manual_lock_seconds>0) {
-    // The game's code pages are read-execute only, so an inline hook on its command queue is refused
-    // (VirtualProtect error 87). A hardware execute breakpoint needs no write access. Nothing is armed
-    // here: arming every thread at start-up froze the game, so the game thread is armed once a match runs.
-    // A failure here only turns the manual-control lock off; the bridge itself keeps working.
-    const auto watch=command_watch::install(static_cast<uintptr_t>(scr::send_command()),&LegacyView::observe_human_packet);
-    manual_lock_hooked=watch.handler_error==0;
-    std::fprintf(log_file,"{\"stage\":\"manual_lock_hook\",\"method\":\"hardware_breakpoint\",\"deferred\":true,\"handler_error\":%lu,\"seconds\":%d}\n",
-      watch.handler_error,manual_lock_seconds);std::fflush(log_file);
-  }
   return result==MH_OK?0:3;
 }
 }

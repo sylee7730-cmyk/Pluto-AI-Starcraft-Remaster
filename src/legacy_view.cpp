@@ -15,29 +15,20 @@
 namespace {
 template<class T> void put(uintptr_t p,T value){std::memcpy(reinterpret_cast<void*>(p),&value,sizeof(value));}
 thread_local LegacyView* current_view=nullptr;
-std::atomic<LegacyView*> active_view{nullptr};  // The view the human-command hook reports to.
-thread_local bool sending_from_bridge=false;    // True while this bridge itself pushes Pluto's packets.
 }
 LegacyView::LegacyView():memory(last-first){}
 void LegacyView::reset() {
   std::fill(memory.begin(),memory.end(),uint8_t{0});slots={};sprites={};lookup.clear();
   raw_start=raw_length=0;flush_error.clear();sent=0;pending_turns.clear();
-  {std::lock_guard<std::mutex> lock(manual_mutex);manual_lock.clear();}
-  human_logged=0;seen_other_opcodes.fill(false);
 }
 void LegacyView::begin_frame(FILE* log,int frame) {
   current_view=this;frame_log=log;frame_number=frame;sent=0;
-  active_view.store(this);
-  if(manual_lock_enabled) {  // Finished units are released before Pluto's next orders are filtered.
-    std::lock_guard<std::mutex> lock(manual_mutex);
-    manual_lock.update(frame,[this](uint32_t tag){return activity_for_tag(tag);});
-  }
   if(hold_commands)discard_pending_turns();  // Dropped before being sent, including ones queued earlier.
   const auto send=reinterpret_cast<void (__cdecl*)(const uint8_t*,size_t)>(scr::send_command());
   for(auto turn=pending_turns.begin();turn!=pending_turns.end();) {
     if(turn->frame>=frame){++turn;continue;}
     for(const auto& packet:turn->packets) {
-      sending_from_bridge=true;send(packet.data(),packet.size());sending_from_bridge=false;++sent;
+      send(packet.data(),packet.size());++sent;
       std::fprintf(log,"{\"command_frame\":%d,\"queued_frame\":%d,\"packet_hex\":\"",frame,turn->frame);
       for(auto b:packet)std::fprintf(log,"%02x",b);
       std::fprintf(log,"\",\"submitted\":true}\n");
@@ -204,11 +195,9 @@ unsigned LegacyView::drain(FILE*,int frame) {
   const auto size=scr::read<uint32_t>(address(0x654aa0));
   if(size>512)throw std::runtime_error("Legacy command queue overflow");
   if(size){
-    // Units Pluto must not command: allies shown as its own, and units the human is driving.
-    const bool filtering=ally_as_own || manual_lock_enabled;
-    if(filtering && !command_filter.foreign)command_filter.foreign=[this](uint16_t id){return is_foreign_handle(id) || is_manual_locked_handle(id);};
+    if(ally_as_own && !command_filter.foreign)command_filter.foreign=[this](uint16_t id){return is_foreign_handle(id);};
     auto packets=translate_commands(reinterpret_cast<const uint8_t*>(address(0x654880)),size,[this](uint16_t id){return scr_handle(id);},
-      filtering?&command_filter:nullptr);
+      ally_as_own?&command_filter:nullptr);
     // SCR's offline turn queue applies commands one frame earlier than Pluto's
     // 1.16.1 training environment. Retain one frame to preserve the measured
     // four-frame observation-to-effect delay, including selection ordering.
@@ -224,69 +213,10 @@ void LegacyView::send_now(const std::vector<Packet>& packets,int frame) {
   if(hold_commands){discard_pending_turns();return;}  // Manual control: dropped, exactly like held commands.
   const auto send=reinterpret_cast<void (__cdecl*)(const uint8_t*,size_t)>(scr::send_command());
   for(const auto& packet:packets) {
-    sending_from_bridge=true;send(packet.data(),packet.size());sending_from_bridge=false;++sent;
+    send(packet.data(),packet.size());++sent;
     if(!frame_log)continue;
     std::fprintf(frame_log,"{\"command_frame\":%d,\"queued_frame\":%d,\"packet_hex\":\"",frame,frame);
     for(auto b:packet)std::fprintf(frame_log,"%02x",b);
     std::fprintf(frame_log,"\",\"submitted\":true}\n");
-  }
-}
-
-void LegacyView::configure_manual_lock(bool enabled,int timeout_frames) {
-  manual_lock_enabled=enabled;
-  std::lock_guard<std::mutex> lock(manual_mutex);
-  manual_lock.timeout_frames=timeout_frames>0?timeout_frames:ManualLock{}.timeout_frames;
-}
-LegacyView::ManualLockReport LegacyView::manual_lock_report() {
-  std::lock_guard<std::mutex> lock(manual_mutex);
-  const auto& stats=manual_lock.stats;
-  return {stats.packets,stats.selections,stats.orders,stats.hotkeys,stats.locks_created,stats.units_trimmed,
-    static_cast<unsigned>(manual_lock.locked_count()),bridge_packets_seen.load()};
-}
-// True when a Pluto-side handle names a unit the human is currently driving.
-bool LegacyView::is_manual_locked_handle(uint16_t id) {
-  if(!manual_lock_enabled)return false;
-  const unsigned index=id&0x7ff;if(!index || index>slots.size())return false;
-  const auto& slot=slots[index-1];if(!slot.raw || slot.generation!=(id>>11))return false;
-  std::lock_guard<std::mutex> lock(manual_mutex);
-  const bool locked=manual_lock.locked(scr_handle(id));
-  if(locked)++manual_lock.stats.units_trimmed;
-  return locked;
-}
-// Resolves an SCR command handle back to the unit struct and classifies it.
-UnitActivity LegacyView::activity_for_tag(uint32_t tag) const {
-  const uint32_t shift=raw_length>1700?13:11,index=tag&((1u<<shift)-1);
-  if(!raw_start || !index || index>raw_length)return UnitActivity::gone;
-  const uint32_t raw=raw_start+(index-1)*336;
-  if(scr::read<uint8_t>(raw+165)!=(tag>>shift))return UnitActivity::gone;  // The slot now holds a different unit.
-  return unit_activity(raw);
-}
-void LegacyView::observe_human_packet(const uint8_t* data,size_t size) noexcept {
-  if(!data || !size)return;
-  LegacyView* view=active_view.load();
-  if(!view || !view->manual_lock_enabled)return;
-  if(sending_from_bridge){++view->bridge_packets_seen;return;}  // Pluto's own packet: counted, never treated as the human's
-  try {
-    std::lock_guard<std::mutex> lock(view->manual_mutex);
-    view->manual_lock.on_human_packet(data,size,view->frame_number);
-    view->log_human_packet(data,size);
-  }catch(...){}
-}
-// bridge.log shows what the human's packets look like, so a wrong assumption about the wire format is visible.
-// Known command packets are logged (first 60 per match); anything else only once per opcode, never its bytes
-// (chat packets carry text).
-void LegacyView::log_human_packet(const uint8_t* data,size_t size) {
-  if(!frame_log)return;
-  const uint8_t id=data[0];
-  const bool known=ManualLock::is_unit_order(id) || ManualLock::is_selection(id) || id==0x13 || id==0x14 || id==0x15 || id==0x62;
-  if(known) {
-    if(human_logged>=60)return;
-    ++human_logged;
-    std::fprintf(frame_log,"{\"stage\":\"human_packet\",\"frame\":%d,\"size\":%zu,\"hex\":\"",frame_number,size);
-    for(size_t i=0;i<size && i<24;++i)std::fprintf(frame_log,"%02x",data[i]);
-    std::fprintf(frame_log,"\"}\n");
-  }else if(!seen_other_opcodes[id]) {
-    seen_other_opcodes[id]=true;
-    std::fprintf(frame_log,"{\"stage\":\"human_packet_other\",\"frame\":%d,\"op\":\"%02x\",\"size\":%zu}\n",frame_number,id,size);
   }
 }

@@ -6,11 +6,7 @@
 #include <unordered_map>
 #include <cstdio>
 #include <string>
-#include <array>
-#include <atomic>
-#include <mutex>
 #include "commands.h"
-#include "manual_lock.h"
 #include "session.h"
 #include "team_stats.h"
 
@@ -33,13 +29,6 @@ public:
   bool hold_one_frame=true;
   bool hold_commands=false;  // Manual control: Pluto keeps thinking but none of its commands reach the game.
   unsigned drain(FILE* log,int frame);
-  // Manual-control lock: units the human has ordered are withheld from Pluto's selections until their work ends.
-  struct ManualLockReport {unsigned packets=0,selections=0,orders=0,hotkeys=0,locks_created=0,units_trimmed=0,locked_now=0,bridge_seen=0;};
-  void configure_manual_lock(bool enabled,int timeout_frames);
-  bool manual_lock_active() const {return manual_lock_enabled;}
-  ManualLockReport manual_lock_report();
-  // Called from the hook on the game's own command queue for every packet that did not come from this bridge.
-  static void observe_human_packet(const uint8_t* data,size_t size) noexcept;
   static void __cdecl flush_turn() noexcept;
   uint32_t scr_handle(uint16_t legacy_handle) const;
 private:
@@ -60,15 +49,6 @@ private:
   std::vector<PendingTurn> pending_turns;
   AllyMask hidden_owners,own_owners;
   CommandFilter command_filter;
-  bool manual_lock_enabled=false;
-  ManualLock manual_lock;
-  std::mutex manual_mutex;  // The hook may run on a different thread than the frame loop.
-  unsigned human_logged=0;
-  std::atomic<unsigned> bridge_packets_seen{0};  // The bridge's own sends that the watch saw: proof that it works.
-  std::array<bool,256> seen_other_opcodes{};
-  bool is_manual_locked_handle(uint16_t legacy_handle);
-  UnitActivity activity_for_tag(uint32_t tag) const;
-  void log_human_packet(const uint8_t* data,size_t size);
   void send_now(const std::vector<Packet>& packets,int frame);
   bool is_foreign_handle(uint16_t legacy_handle) const;
   bool is_hidden(uint32_t raw) const;
