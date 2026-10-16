@@ -45,8 +45,9 @@ TeamStatsMode team_stats=TeamStatsMode::off;  // Allied play: Pluto's statistics
 // Win-graph diagnostics: how often Pluto handed shapes to the bridge in this match.
 unsigned graph_frames=0,graph_shapes=0;
 // Shown in bridge.log ("version") and at the start of every match, so it is clear which build runs.
-constexpr char bridge_version[]="v21";
+constexpr char bridge_version[]="v22";
 bool pluto_noresign=false;        // The loaded pluto.dll carries the no-resign patch (never sends gg/leave).
+bool pluto_resign_env_off=false;  // v2.0 and later: BWRL_RESIGN_THRESHOLD=off, so Pluto never sends gg/leave.
 // Manual control: a hotkey toggles whether Pluto's commands reach the game. Pluto controls the
 // same player the human does and issues orders every 6 frames, so manual orders are otherwise
 // overwritten within a fraction of a second. RegisterHotKey runs on its own thread; the game
@@ -137,12 +138,21 @@ void load_bot() {
   api_game->onMatchStart();
   if(!bot_module) {
     const auto bot_hash=file_sha256(bot_path);
-    if(bot_hash!=pluto_sha256 && bot_hash!=pluto_noresign_sha256)throw std::runtime_error("Unsupported Pluto DLL SHA-256; expected CoG 2026 release");
-    pluto_noresign=bot_hash==pluto_noresign_sha256;
-    std::fprintf(log_file,"{\"stage\":\"pluto_dll\",\"variant\":\"%s\"}\n",pluto_noresign?"no_resign_patch":"original");
+    const auto* known_dll=find_pluto_dll(bot_hash);
+    if(!known_dll)throw std::runtime_error("Unsupported Pluto DLL SHA-256; supported releases: cog2026-2578600, v2.0");
+    pluto_noresign=known_dll->no_resign_patch;
+    // v2.0 and later turn resignation off through an environment variable instead of a binary patch.
+    char resign_setting[32]={};
+    const DWORD resign_length=GetEnvironmentVariableA("BWRL_RESIGN_THRESHOLD",resign_setting,sizeof(resign_setting));
+    pluto_resign_env_off=known_dll->honors_resign_env && resign_length>0 && resign_length<sizeof(resign_setting) && std::string(resign_setting)=="off";
+    std::fprintf(log_file,"{\"stage\":\"pluto_dll\",\"release\":\"%s\",\"variant\":\"%s\",\"resign_threshold_env\":\"%s\"}\n",
+      known_dll->release,pluto_noresign?"no_resign_patch":"original",known_dll->honors_resign_env?(resign_length>0&&resign_length<sizeof(resign_setting)?resign_setting:"default"):"unsupported");
     bot_module=LoadLibraryExW(bot_path,nullptr,LOAD_WITH_ALTERED_SEARCH_PATH);
     if(!bot_module)throw std::runtime_error("Cannot load configured Pluto DLL");
     legacy=std::make_unique<LegacyView>();legacy->hide_allies=allow_allies && !ally_as_own;legacy->ally_as_own=ally_as_own;legacy->ally_stasis=ally_stasis;legacy->team_stats=allow_allies?team_stats:TeamStatsMode::off;legacy->update();legacy->bind(bot_module);
+    // The hash picked the release; the bytes of the DLL must agree with the binding table that matched.
+    if(std::string(legacy->bound_release())!=known_dll->release)throw std::runtime_error("Pluto binding table does not belong to this DLL release");
+    std::fprintf(log_file,"{\"stage\":\"pluto_bound\",\"release\":\"%s\"}\n",legacy->bound_release());
   }else{legacy->reset();legacy->update();}
   legacy->hold_one_frame=match_hold_one_frame;
   const auto init=reinterpret_cast<void (__cdecl*)(BWAPI::Game*)>(GetProcAddress(bot_module,"gameInit"));
@@ -300,6 +310,7 @@ void update_frame() {
       }
     }
     if(pluto_noresign)print_local({u8"기권 코드 제거 패치가 적용된 Pluto입니다: 승률이 낮아도 gg를 치지 않고 끝까지 싸웁니다."});
+    if(pluto_resign_env_off)print_local({u8"기권이 꺼져 있습니다: 승률이 낮아도 gg를 치지 않고 끝까지 싸웁니다."});
     print_local({u8"플루토 팀전 브리지 "+std::string(bridge_version)});
     if(pause_vk)print_local({u8"직접 조종하려면: "+pause_key_name()+u8" 키로 플루토를 일시정지/재개합니다."});
     // Mode notices describe the selected mode, or a game that really has allies / several opponents.

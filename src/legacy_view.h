@@ -21,6 +21,7 @@ public:
   LegacyView();
   void update();
   void bind(HMODULE pluto);
+  const char* bound_release() const{return bound_release_;}  // The Pluto release whose binding table matched (set by bind).
   void reset();
   void begin_frame(FILE* log,int frame);
   void discard_pending_turns(){pending_turns.clear();command_filter.selection_blocked=false;}
@@ -41,6 +42,7 @@ private:
   std::array<Slot,1700> slots{};
   std::unordered_map<uint32_t,unsigned> lookup;
   uint32_t raw_start=0,raw_length=0;
+  const char* bound_release_=nullptr;
   FILE* frame_log=nullptr;
   int frame_number=0;
   std::string flush_error;

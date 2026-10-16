@@ -1,5 +1,5 @@
 #include "legacy_view.h"
-#include "pluto_bindings.h"
+#include "pluto_binding_select.h"
 #include "scr_profile_13515_x86.h"
 #include "scr_layout.h"
 #include "commands.h"
@@ -175,8 +175,17 @@ void LegacyView::update() {
 }
 void LegacyView::bind(HMODULE pluto) {
   const auto base=reinterpret_cast<uint32_t>(pluto);
-  for(auto& binding:pluto_bindings)if(scr::read<uint32_t>(base+binding.rva)!=binding.expected)throw std::runtime_error("Pluto binding validation failed; unsupported binary");
-  for(auto& binding:pluto_bindings) {
+  const auto* dos=reinterpret_cast<const IMAGE_DOS_HEADER*>(pluto);
+  if(dos->e_magic!=IMAGE_DOS_SIGNATURE)throw std::runtime_error("Pluto binding validation failed; not a PE image");
+  const auto* headers=reinterpret_cast<const IMAGE_NT_HEADERS32*>(base+dos->e_lfanew);
+  if(headers->Signature!=IMAGE_NT_SIGNATURE)throw std::runtime_error("Pluto binding validation failed; not a PE image");
+  // Several Pluto releases are supported; the table whose every entry matches this binary is the one to apply.
+  // SizeOfImage bounds the reads, so a table made for a larger binary is never read past the end of a smaller one.
+  const auto* chosen=select_binding_set([base](uint32_t rva){return scr::read<uint32_t>(base+rva);},headers->OptionalHeader.SizeOfImage);
+  if(!chosen)throw std::runtime_error("Pluto binding validation failed; unsupported binary");
+  bound_release_=chosen->release;
+  for(size_t i=0;i<chosen->count;++i) {
+    const auto& binding=chosen->bindings[i];
     const int32_t signed_address=static_cast<int32_t>(binding.expected);
     uint32_t value;
     if(binding.expected==0x485a40)value=reinterpret_cast<uint32_t>(&LegacyView::flush_turn);
