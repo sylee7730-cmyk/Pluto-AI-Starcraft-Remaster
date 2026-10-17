@@ -45,7 +45,7 @@ TeamStatsMode team_stats=TeamStatsMode::off;  // Allied play: Pluto's statistics
 // Win-graph diagnostics: how often Pluto handed shapes to the bridge in this match.
 unsigned graph_frames=0,graph_shapes=0;
 // Shown in bridge.log ("version") and at the start of every match, so it is clear which build runs.
-constexpr char bridge_version[]="v22";
+constexpr char bridge_version[]="v23";
 bool pluto_noresign=false;        // The loaded pluto.dll carries the no-resign patch (never sends gg/leave).
 bool pluto_resign_env_off=false;  // v2.0 and later: BWRL_RESIGN_THRESHOLD=off, so Pluto never sends gg/leave.
 // Manual control: a hotkey toggles whether Pluto's commands reach the game. Pluto controls the
@@ -149,6 +149,17 @@ void load_bot() {
       known_dll->release,pluto_noresign?"no_resign_patch":"original",known_dll->honors_resign_env?(resign_length>0&&resign_length<sizeof(resign_setting)?resign_setting:"default"):"unsupported");
     bot_module=LoadLibraryExW(bot_path,nullptr,LOAD_WITH_ALTERED_SEARCH_PATH);
     if(!bot_module)throw std::runtime_error("Cannot load configured Pluto DLL");
+    // Which inference timing this game runs with: "block" waits for each decision (Pluto's default, as offline),
+    // "straddle" lets a decision slip to a later frame once the budget is spent (-Straddle). Logged so a slow-feeling
+    // game can be told apart from a slow inference.
+    {
+      char straddle_setting[8]={},budget_setting[16]={};
+      const DWORD straddle_length=GetEnvironmentVariableA("BWRL_STRADDLE",straddle_setting,sizeof(straddle_setting));
+      const DWORD budget_length=GetEnvironmentVariableA("BWRL_FRAME_BUDGET_MS",budget_setting,sizeof(budget_setting));
+      const bool straddling=straddle_length>0 && straddle_length<sizeof(straddle_setting) && std::string(straddle_setting)=="1";
+      std::fprintf(log_file,"{\"stage\":\"pluto_timing\",\"mode\":\"%s\",\"frame_budget_ms\":\"%s\"}\n",
+        straddling?"straddle":"block",budget_length>0&&budget_length<sizeof(budget_setting)?budget_setting:"default");
+    }
     legacy=std::make_unique<LegacyView>();legacy->hide_allies=allow_allies && !ally_as_own;legacy->ally_as_own=ally_as_own;legacy->ally_stasis=ally_stasis;legacy->team_stats=allow_allies?team_stats:TeamStatsMode::off;legacy->update();legacy->bind(bot_module);
     // The hash picked the release; the bytes of the DLL must agree with the binding table that matched.
     if(std::string(legacy->bound_release())!=known_dll->release)throw std::runtime_error("Pluto binding table does not belong to this DLL release");

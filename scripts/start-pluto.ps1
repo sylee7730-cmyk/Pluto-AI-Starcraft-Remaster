@@ -12,6 +12,7 @@ param(
   [switch]$AnyGame,
   [switch]$KeepOnlineHold,
   [switch]$NoResign,
+  [switch]$Straddle,
   [ValidateRange(0,255)][int]$PauseKey=120,
   [switch]$VerifyOnly
 )
@@ -88,7 +89,11 @@ try {
   if ($DrawGraph) { $env:BWRL_DRAW = '1' }
   # v2.0 and later: Pluto never resigns. The CoG 2026 release ignores this variable (it has the launcher's binary patch instead).
   if ($NoResign) { $env:BWRL_RESIGN_THRESHOLD = 'off' }
-  if ($Multiplayer) {
+  # Online play waits for each decision exactly as offline play does (Pluto's default: block until the inference is
+  # done, up to 40 ms). Inference takes about 12 ms here, well inside one frame (about 42 ms at Fastest), so a decision
+  # lands on the frame it was made. -Straddle restores the earlier online behaviour: never hold a frame past 10 ms and
+  # let a late decision slip to a later frame, which makes the bot react later whenever inference takes longer than that.
+  if ($Multiplayer -and $Straddle) {
     $env:BWRL_STRADDLE = '1'
     if (-not $env:BWRL_FRAME_BUDGET_MS) { $env:BWRL_FRAME_BUDGET_MS = '10' }
   }
